@@ -1,0 +1,14 @@
+# 统一用 LF。Windows 上 core.autocrlf=true 会把 .sh 转成 CRLF，
+# 进了容器就是 `/entrypoint.sh: not found`（报错看不出是换行符问题，很浪费时间）。
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.go    text eol=lf
+Dockerfile       text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+
+# 图片是二进制，别让 git 去改
+*.png binary
+*.jpg binary

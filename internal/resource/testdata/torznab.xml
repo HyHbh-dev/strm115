@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Prowlarr / Jackett 的 Torznab 输出形态：磁力信息全在 torznab:attr 里。
+     取三条：有 infohash 的、enclosure 直接是磁力的、只有 .torrent 直链的。 -->
+<rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel>
+    <title>Prowlarr</title>
+    <item>
+      <title>流浪地球2.The.Wandering.Earth.II.2023.2160p.WEB-DL.H265.DDP5.1</title>
+      <guid>https://pt.example.com/details/1001</guid>
+      <link>https://pt.example.com/details/1001</link>
+      <pubDate>Sat, 07 Nov 2026 10:00:00 +0800</pubDate>
+      <size>21474836480</size>
+      <enclosure url="https://pt.example.com/download/1001.torrent" length="21474836480" type="application/x-bittorrent" />
+      <torznab:attr name="infohash" value="0123456789abcdef0123456789abcdef01234567" />
+      <torznab:attr name="seeders" value="42" />
+      <torznab:attr name="peers" value="7" />
+      <torznab:attr name="category" value="2000" />
+    </item>
+    <item>
+      <title>[Lilith-Raws] 葬送的芙莉莲 - 01 [Baha][WEB-DL][1080p][AVC AAC][CHT][MP4]</title>
+      <guid>https://share.dmhy.org/topics/view/6001</guid>
+      <link>https://share.dmhy.org/topics/view/6001</link>
+      <pubDate>Fri, 06 Nov 2026 22:00:00 +0800</pubDate>
+      <description><![CDATA[<p>磁力：magnet:?xt=urn:btih:AAAABBBBCCCCDDDDEEEEFFFF0000111122223333</p>]]></description>
+      <enclosure url="magnet:?xt=urn:btih:AAAABBBBCCCCDDDDEEEEFFFF0000111122223333&amp;dn=frieren" length="0" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <title>三体 第一季 全 30 集 1080P</title>
+      <guid>https://mikanani.me/Home/Episode/abc</guid>
+      <link>https://mikanani.me/Home/Episode/abc</link>
+      <pubDate>Thu, 05 Nov 2026 09:30:00 +0800</pubDate>
+      <enclosure url="https://mikanani.me/Download/20261105/abc.torrent" length="16106127360" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <title>   </title>
+      <guid>https://pt.example.com/details/1002</guid>
+    </item>
+  </channel>
+</rss>

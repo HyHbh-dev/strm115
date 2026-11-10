@@ -1,0 +1,69 @@
+# 生产覆盖层：域名 + HTTPS 反向代理（Caddy）形态。
+# 叠加用法（不要单独使用本文件）：
+#   docker compose --env-file .env.production \
+#     -f docker-compose.yml -f docker-compose.prod.yml \
+#     --profile emby up -d --build
+# 只写覆盖项，基础定义全部留在 docker-compose.yml。
+#
+# 安全前提：strm115 / emby 的端口只绑宿主回环，公网入口只走 caddy 的 80/443。
+# 生产不要用 ADMIN_PASSWORD 明文环境变量：首次启动请在网页里设置管理员
+# （口令落 ./data/strm115.db，不进配置文件）。若必须预置，请改用 Docker
+# secrets 并自行调整基础文件的 environment，切勿写进 .env。
+#
+# 注意：本文件用到 !override 自定义 YAML 标签，需要较新的 Docker Compose v2。
+# 若 `docker compose config` 报 unknown tag，请升级 Compose；或把端口改动
+# 合并进基础文件（本任务约束不改基础文件，故用覆盖标签）。
+
+services:
+  strm115:
+    # compose 对 ports 是「按唯一键 {ip,target,published,protocol} 追加」而非替换：
+    # 只写 127.0.0.1 会同时保留基础文件的 0.0.0.0 绑定，同端口还会冲突导致启动失败。
+    # !override 绕过合并规则，用下面这份完整替换基础 ports（不是 !reset：!reset 只清空）。
+    ports: !override
+      # 公网入口只走 caddy，这两个端口只在宿主回环可见
+      - "127.0.0.1:${ADMIN_PORT:-6060}:6060"
+      - "127.0.0.1:${PLAY_PORT:-6086}:6086"
+
+    # 必须保持基础文件的映射写法（KEY: value），compose 才会按键合并、保留原有 env。
+    # COOKIE_SECURE=1：会话 cookie 带 Secure，并信任反代传来的 X-Forwarded-Proto。
+    # 仅在 HTTPS 反代下开启；直连 http://127.0.0.1:6060 时浏览器不会回传该 cookie。
+    environment:
+      COOKIE_SECURE: "1"
+
+    # 不写 healthcheck / stop_grace_period：沿用镜像自带 HEALTHCHECK 与基础文件的 15s。
+
+  emby:
+    # emby 在 --profile emby 下才启动；未启用时 caddy 的 emby 站点会反代 502。
+    ports: !override
+      # 公网入口只走 caddy
+      - "127.0.0.1:${EMBY_PORT:-8096}:8096"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    # 唯一的公网入口；80 供 ACME HTTP-01 校验与 HTTP->HTTPS 跳转
+    ports:
+      - "80:80"
+      - "443:443"
+    # Caddyfile 用 {$VAR} 直接引用，四个变量都必须在 .env.production 里设置
+    environment:
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      PLAY_DOMAIN: ${PLAY_DOMAIN}
+      EMBY_DOMAIN: ${EMBY_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - strm115
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

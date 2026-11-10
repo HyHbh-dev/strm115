@@ -1,0 +1,69 @@
+# Caddy v2 反代：三个域名都在这里终结 TLS，后端容器只监听宿主回环。
+#
+# 关于环境变量默认值：Caddy v2 确实支持 {$VAR:default} 写法，但本文件刻意
+# 全部使用不带默认值的 {$VAR}。生产环境若静默回退到 localhost，会掩盖
+# .env.production 漏配，还可能让 Caddy 签出自签证书而不被察觉。
+# 因此：ADMIN_DOMAIN / PLAY_DOMAIN / EMBY_DOMAIN / ACME_EMAIL 必须在
+# .env.production 里设置；缺失时 Caddy 会因空站点地址/空参数直接启动失败，
+# 便于上线前快速发现。Caddyfile 占位符不支持运行期 {placeholder} 做站点地址。
+#
+# 注意：PLAY_DOMAIN 带 https:// 前缀（因为它同时是写进 .strm 的完整 URL）。
+# Caddy v2 站点地址允许 https:// 前缀，等价于裸域名，自动 HTTPS 仍然生效。
+
+{
+    # 仅用于 Let's Encrypt 账户注册 / 证书到期通知，留空仍会签发证书。
+    # 若域名解析或 80/443 不通导致 ACME 校验失败，Caddy 会回退到自签证书，
+    # 浏览器会告警；上线前请自行确认拿到的是受信任证书。
+    email {$ACME_EMAIL}
+
+    # auto_https 保持默认（不显式配置）：自动申请/续期证书 + HTTP->HTTPS 跳转。
+}
+
+# ---------------------------------------------------------------------------
+# 管理后台：/api/login、/api/setup 等公开接口也只经这里暴露。
+# Caddy 反代默认带上 X-Forwarded-Proto: https，配合 strm115 的 COOKIE_SECURE=1
+# 会话 cookie 才会带 Secure；二者必须同时生效。
+# ---------------------------------------------------------------------------
+{$ADMIN_DOMAIN} {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "same-origin"
+    }
+    encode zstd gzip
+    # 不写 request_body 限流：那是 Caddy v2.10+ 才有的实验指令，
+    # caddy:2-alpine 拉到旧版会直接启动失败。应用层的 readJSON 已有 1MB 上限，
+    # 真要挡大请求请在前置网关/固定版本镜像上做，别让上线卡在版本差异上。
+    reverse_proxy strm115:6060
+}
+
+# ---------------------------------------------------------------------------
+# 播放代理：这个域名会写进 .strm 文件，/d/{pickcode} 匿名可访问。
+# 风险：pickcode 本身就是凭证，任何拿到链接的人都能播放，等同不记名令牌。
+# 建议至少加一层访问控制（二选一），默认全部注释以免直接破坏已生成的 .strm：
+#   basic_auth {
+#       player REPLACE_WITH_BCRYPT_HASH
+#   }
+#   # 哈希用 `caddy hash-password --plaintext '<强口令>'` 生成，切勿写明文口令。
+#   # 注意：启用 basic_auth 后 Emby/播放器请求 .strm 不会带认证头，
+#   #       需把 user:pass 内嵌进播放地址，或改用 IP 白名单（remote_ip + respond 403）。
+# 这里刻意不做 encode：视频流已压缩且依赖 Range 请求，再压缩只浪费 CPU。
+# ---------------------------------------------------------------------------
+{$PLAY_DOMAIN} {
+    reverse_proxy strm115:6086
+}
+
+# ---------------------------------------------------------------------------
+# Emby Web：emby 服务在 --profile emby 下才启动，未启用时该站点反代会 502
+# （Caddy 本身正常启动，上游在请求时才解析）。
+# ---------------------------------------------------------------------------
+{$EMBY_DOMAIN} {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "same-origin"
+    }
+    reverse_proxy emby:8096
+}

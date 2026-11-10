@@ -1,0 +1,50 @@
+# 构建产物
+/strm115
+/strm115.exe
+*.exe
+*.test
+
+# 运行数据（绝不入库：里面有账号凭证）
+/data/
+/media/
+/emby-config/
+/logs/
+
+# 本机环境变量（含 AUTH_PASSWORD）
+/.env
+.env.local
+
+# 本地冒烟测试残留
+.smoke*/
+.server.log
+.tmp*/
+*.bak
+*~
+
+# 前端：依赖与本地产物不入库（镜像构建时由 node 阶段生成）
+web/node_modules/
+web/dist/
+# webdist 是 go:embed 的编译输入，只留占位文件；
+# 本地开发跑 scripts/web-build.sh 生成，构建镜像时自动生成。
+internal/httpapi/webdist/*
+!internal/httpapi/webdist/.gitkeep
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+
+# 本地调试留下的临时文件（curl 的 cookie jar 等）
+.ck.txt
+.cur.json
+
+# 抓页面排查问题时的临时目录
+.local-tmp/
+
+# 生产环境配置（含域名与可能的口令，绝不入库；只提交 .env.production.example）
+.env.production
+backups/
+
+# Python 脚本缓存（scripts/fast-update.py 等）
+__pycache__/
+*.pyc

@@ -1,0 +1,375 @@
+package embygw
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// strmFile 造一个真实的 .strm 文件，返回它的路径。
+// 网关读的是文件内容，而不是 Emby 返回的 URL —— Emby 的 Path 指向文件本身。
+func strmFile(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "F1.mkv.strm")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// fakeEmby 只实现网关用到的两个接口：条目查询 + 兜底代理的落点。
+func fakeEmby(t *testing.T, itemPath string) (*httptest.Server, *int) {
+	t.Helper()
+	proxied := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Items" || r.URL.Path == "/emby/Items" {
+			if r.Header.Get("X-Emby-Token") == "" && r.URL.Query().Get("api_key") == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			// 用 %q 转义：Windows 下临时路径带反斜杠，手拼 JSON 会变成非法转义。
+			body, _ := json.Marshal(map[string]any{
+				"Items": []map[string]string{{"Id": "437", "Path": itemPath}},
+			})
+			_, _ = w.Write(body)
+			return
+		}
+		proxied++
+		_, _ = io.WriteString(w, "proxied:"+r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &proxied
+}
+
+func newGateway(t *testing.T, upstream string, resolve Resolver, bypass ...string) *Gateway {
+	t.Helper()
+	g, err := New(Options{Upstream: upstream, Bypass: bypass, Resolve: resolve})
+	if err != nil {
+		t.Fatalf("构造网关失败: %v", err)
+	}
+	return g
+}
+
+// 静态直出请求要 302 到网盘直链，视频字节不再经过 Emby。
+func TestStaticStreamRedirectsToCDN(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv?/F1.mkv"))
+	var gotID, gotUA string
+	g := newGateway(t, up.URL, func(_ context.Context, id, ua string) (string, error) {
+		gotID, gotUA = id, ua
+		return "https://dl-c.drive.quark.cn/x", nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/emby/videos/437/stream?static=true", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	req.Header.Set("User-Agent", "Hills Windows/1.6.0")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("应该 302，实际 %d（body=%q）", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "https://dl-c.drive.quark.cn/x" {
+		t.Fatalf("Location = %q", loc)
+	}
+	if gotID != "q/04ac73.mkv" {
+		t.Fatalf("传给解析器的 id = %q，应该保留 q/ 前缀与扩展名", gotID)
+	}
+	if gotUA != "Hills Windows/1.6.0" {
+		t.Fatalf("UA 必须原样透传（115 按 UA 签名），实际 %q", gotUA)
+	}
+	if *proxied != 0 {
+		t.Fatalf("不该再走 Emby 代理，实际代理了 %d 次", *proxied)
+	}
+}
+
+// 转码请求必须留在 Emby：把 m3u8 换成 mkv 直链客户端会播不了。
+func TestTranscodeStaysOnEmby(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv"))
+	g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+		t.Fatal("转码请求不该被接管")
+		return "", nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/emby/videos/437/stream?VideoCodec=h264&AudioCodec=aac", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || *proxied != 1 {
+		t.Fatalf("应该原样代理，实际 code=%d proxied=%d", rec.Code, *proxied)
+	}
+}
+
+// UA 例外名单里的客户端不拦（个别播放器不跟 302）。
+func TestBypassUA(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv"))
+	g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+		t.Fatal("例外 UA 不该被接管")
+		return "", nil
+	}, "TV Box")
+
+	req := httptest.NewRequest(http.MethodGet, "/emby/videos/437/stream?static=true", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	req.Header.Set("User-Agent", "okhttp/4.9 (TV Box)")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if *proxied != 1 {
+		t.Fatalf("应该代理，实际 proxied=%d", *proxied)
+	}
+}
+
+// 条目不是 .strm（本地真实文件）就别接管，老老实实代理。
+func TestLocalFileNotRedirected(t *testing.T) {
+	up, proxied := fakeEmby(t, "/media/电影/本地片.mkv")
+	g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+		t.Fatal("本地文件不该走直链解析")
+		return "", nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/emby/videos/9/stream?static=true", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if *proxied != 1 {
+		t.Fatalf("应该代理，实际 proxied=%d", *proxied)
+	}
+}
+
+// 解析失败（网盘掉线 / 账号失效）时必须退化成代理，不能让播放直接失败。
+func TestResolveFailureFallsBackToProxy(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv"))
+	g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+		return "", context.DeadlineExceeded
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/emby/videos/437/stream?static=true", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if *proxied != 1 || rec.Code == http.StatusFound {
+		t.Fatalf("解析失败应回退代理，实际 code=%d proxied=%d", rec.Code, *proxied)
+	}
+}
+
+// settingSource 是 gatewayOn 的最小实现，测试里当假设置表用。
+type settingSource map[string]string
+
+func (m settingSource) GetSetting(_ context.Context, key string) (string, bool) {
+	v, ok := m[key]
+	return v, ok
+}
+
+// 老配置里「填了端口」就等于启用；新配置只看开关，且开关优先。
+func TestGatewayOn(t *testing.T) {
+	cases := []struct {
+		name string
+		kv   settingSource
+		want bool
+	}{
+		{"什么都没有", settingSource{}, false},
+		{"新开关打开", settingSource{"emby_gateway_on": "1"}, true},
+		{"新开关关闭", settingSource{"emby_gateway_on": "0"}, false},
+		{"新开关优先于老端口", settingSource{"emby_gateway_on": "0", "emby_gateway_port": "18096"}, false},
+		{"老配置填了端口", settingSource{"emby_gateway_port": "18096"}, true},
+		{"老配置填 0", settingSource{"emby_gateway_port": "0"}, false},
+		{"老配置留空", settingSource{"emby_gateway_port": ""}, false},
+	}
+	for _, c := range cases {
+		if got := gatewayOn(context.Background(), c.kv); got != c.want {
+			t.Errorf("%s：gatewayOn = %v，期望 %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestStrmTarget(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+		ok   bool
+	}{
+		{"http://192.168.1.10:6086/d/q/04ac73.mkv?/F1.mkv", "q/04ac73.mkv", true},
+		{"http://192.168.1.10:6086/d/ctdvbd6p1km4udxn4.mkv", "ctdvbd6p1km4udxn4.mkv", true},
+		{"https://emby.example.com/d/q/abc", "q/abc", true},
+		{"/media/电影/本地片.mkv", "", false},
+		{"https://cdn.example.com/x.mkv", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := strmTarget(c.raw)
+		if got != c.want || ok != c.ok {
+			t.Errorf("strmTarget(%q) = (%q,%v)，期望 (%q,%v)", c.raw, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// 目录页 / PlaybackInfo 这类请求一个字都不能改，必须原样转发。
+func TestNonStreamRequestsAreProxied(t *testing.T) {
+	up, proxied := fakeEmby(t, "")
+	g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+		t.Fatal("非播放请求不该走直链解析")
+		return "", nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/emby/Items/437/PlaybackInfo", strings.NewReader("{}"))
+	req.Header.Set("X-Emby-Token", "tok")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if *proxied != 1 {
+		t.Fatalf("应该代理，实际 proxied=%d", *proxied)
+	}
+	if !strings.HasPrefix(rec.Body.String(), "proxied:") {
+		t.Fatalf("代理响应异常: %q", rec.Body.String())
+	}
+}
+
+// 合并端口之后，/d/ 和 /healthz 必须还给播放代理。
+// 少了这一步，播放器请求 .strm 里的地址会变成「转给 8096 再 404」。
+func TestPlayPathsBypassEmbyProxy(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://127.0.0.1:6086/d/q/x.mkv"))
+	var hit string
+	play := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = r.URL.Path
+		_, _ = io.WriteString(w, "play:"+r.URL.Path)
+	})
+	g, err := New(Options{
+		Upstream: up.URL,
+		Play:     play,
+		Resolve:  func(context.Context, string, string) (string, error) { return "", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []string{"/d/q/04ac73.mkv", "/healthz"} {
+		hit = ""
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if hit != p {
+			t.Fatalf("%s 应该交给播放代理，实际落到 %q", p, hit)
+		}
+	}
+	if *proxied != 0 {
+		t.Fatalf("播放路径不该转给 Emby，实际转发 %d 次", *proxied)
+	}
+}
+
+// 网关关掉之后，同一个端口回到纯播放代理（不是整个端口不可用）。
+func TestManagerFallsBackToPlayWhenDisabled(t *testing.T) {
+	m := NewManager(nil)
+	var got string
+	play := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	})
+	m.Bind(":6086", play)
+	if err := m.Apply(false, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	m.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/emby/System/Info", nil))
+	if got != "/emby/System/Info" {
+		t.Fatalf("关闭网关后请求应落到播放代理，实际 %q", got)
+	}
+	if m.Addr() != "" {
+		t.Fatalf("关闭后 Addr() 应为空，实际 %q", m.Addr())
+	}
+	if m.ListenAddr() != ":6086" {
+		t.Fatalf("端口的监听地址不该随网关开关变化，实际 %q", m.ListenAddr())
+	}
+}
+
+// 打开网关后，同一端口由网关接管，Addr() 报出实际监听地址。
+func TestManagerEnablesGatewayOnSamePort(t *testing.T) {
+	m := NewManager(nil)
+	m.Bind(":6086", http.NotFoundHandler())
+
+	up, _ := fakeEmby(t, strmFile(t, "http://127.0.0.1:6086/d/q/x.mkv"))
+	err := m.Apply(true, Options{
+		Upstream: up.URL,
+		Resolve:  func(context.Context, string, string) (string, error) { return "https://cdn/x", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Addr() != ":6086" {
+		t.Fatalf("Addr() 应为 :6086，实际 %q", m.Addr())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/emby/videos/437/stream?static=true", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	rec := httptest.NewRecorder()
+	m.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("网关应接管播放请求并 302，实际 %d", rec.Code)
+	}
+}
+
+// PlaybackInfo 到达时就该把直链换好：真正的取流请求随后就到，那时必须命中缓存。
+func TestPlaybackInfoPrewarmsLink(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv"))
+	calls := make(chan string, 4)
+	g, err := New(Options{
+		Upstream: up.URL,
+		Play:     http.NotFoundHandler(), // 预热要求 Play 非空（同端口部署才需要）
+		Resolve: func(_ context.Context, id, _ string) (string, error) {
+			calls <- id
+			return "https://cdn/x", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/emby/Items/437/PlaybackInfo?UserId=u1", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	req.Header.Set("User-Agent", "Hills Windows/1.6.0")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || *proxied != 1 {
+		t.Fatalf("PlaybackInfo 必须原样代理，实际 code=%d proxied=%d", rec.Code, *proxied)
+	}
+	select {
+	case id := <-calls:
+		if id != "q/04ac73.mkv" {
+			t.Fatalf("预热的 id = %q", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("PlaybackInfo 之后没有预热直链")
+	}
+
+	// 预热完成后再来取流请求，解析器不应该被再叫一次（命中缓存由 Proxy 负责，
+	// 这里只验证网关自己不重复解析）。
+	select {
+	case extra := <-calls:
+		t.Fatalf("不该重复解析，却收到 %q", extra)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// 没有 Play / Resolve 时（比如只做反代）预热要安静跳过，不能起 goroutine 乱撞。
+func TestPlaybackInfoWithoutResolverIsIgnored(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv"))
+	g := newGateway(t, up.URL, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/emby/Items/437/PlaybackInfo", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || *proxied != 1 {
+		t.Fatalf("应该原样代理，实际 code=%d proxied=%d", rec.Code, *proxied)
+	}
+}

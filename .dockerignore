@@ -1,0 +1,41 @@
+# 构建上下文只需要 Go 源码和 go.mod/go.sum
+.git
+.gitignore
+.github
+
+# 本地产物（*.exe 不匹配编辑器留下的 *.exe~，单独列一行）
+*.exe
+*.exe~
+strm115
+data/
+media/
+emby-config/
+setup/
+.smoke*/
+*.db
+*.db-*
+
+# 文档与截图不进镜像
+docs/
+*.md
+.env
+.env.*
+!.env.example
+
+# 前端依赖与本地构建产物：镜像构建时由 node 阶段自己装、自己编
+web/node_modules/
+web/dist/
+internal/httpapi/webdist/
+
+# 本地调试残留 / 备份：不进构建上下文，免得每改一次就废掉一层缓存
+.ck.txt
+.cur.json
+.server.log
+.tmp*/
+.local-tmp/
+backups/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

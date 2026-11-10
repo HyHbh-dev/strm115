@@ -1,0 +1,161 @@
+# strm115 容器编排
+#
+# 一条命令启动：docker compose up -d --build
+# 启动后打开 http://<本机IP>:6060，第一次访问会让你设置管理员账号和密码。
+# .env 里只剩「路径和端口」这类机器相关的东西，密码不进配置文件。
+
+name: strm115
+
+services:
+  strm115:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-v0.4.5}
+    image: strm115:${VERSION:-v0.4.5}
+    container_name: strm115
+    restart: unless-stopped
+
+    # 让容器能按名字找到宿主机。设置页填 127.0.0.1:7890 这类「宿主机代理」
+    # 时，后端会自动改写到这个地址，否则容器里的 127.0.0.1 只会指向自己。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # 程序收到 SIGTERM 后用 10 秒收尾（等在途同步写完 .strm），
+    # 这里留 15 秒余量，避免写了一半的 .tmp 文件被 SIGKILL 截断。
+    stop_grace_period: 15s
+
+    ports:
+      # 管理后台
+      - "${ADMIN_PORT:-6060}:6060"
+      # 播放代理：写进 .strm 的地址必须指向这个端口
+      - "${PLAY_PORT:-6086}:6086"
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 管理员账号密码默认在网页里设置（存在 ./data 的 SQLite 里），
+      # 下面两个变量只用于「无人值守部署」：首次启动时如果数据库里还没有账号，
+      # 就用它们建一个。留空 = 纯网页设置，推荐。
+      ADMIN_USER: ${ADMIN_USER:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # 让宿主媒体目录的属主与容器进程一致，否则写 .strm 会 Permission denied。
+      # 在宿主执行 `id -u` / `id -g` 得到自己的值。
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      # 同一份媒体目录在宿主机上的路径。详情抽屉要用它把容器里的
+      # /media/movies/… 换算成能复制、能打开的宿主机路径；相对路径无效。
+      MEDIA_HOST_PATH: ${MEDIA_HOST_PATH:-}
+      # TMDB 兜底 Key：源码里不内置任何 Key。留空时请到「设置 → 电影数据源」
+      # 填自己的；也可以在这里用 .env 注入（.env 不入库）。
+      STRM115_TMDB_KEY: ${STRM115_TMDB_KEY:-}
+
+    volumes:
+      # 数据库 + 会话密钥。这个目录必须持久化，删了就要重新登录、重建台账。
+      - ./data:/data
+      # 宿主的媒体目录。.strm 会写在这里，Emby/Jellyfin 从这个目录扫库。
+      # Windows 示例：MEDIA_HOST_PATH=D:/media
+      - ${MEDIA_HOST_PATH:-./media}:/media
+
+    # 容器内 /media 与宿主路径不一致时，在后台「设置 → 路径映射」里
+    # 填「容器内路径 → Emby 看到的路径」，否则 Emby 会指向不存在的文件。
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 可选的本机 Emby。用 `docker compose --profile emby up -d` 一起启动。
+  # 放在同一个 compose 里是刻意的：两个服务共用 ${MEDIA_HOST_PATH}，
+  # 媒体目录一定指向宿主的同一个位置，不需要配「路径映射」。
+  emby:
+    profiles: ["emby"]
+    image: emby/embyserver:latest
+    container_name: emby
+    restart: unless-stopped
+
+    ports:
+      - "${EMBY_PORT:-8096}:8096"
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      UID: ${PUID:-1000}
+      GID: ${PGID:-1000}
+
+    volumes:
+      # Emby 自己的配置/数据库，独立于 /data，别和 strm115 的 SQLite 混在一起
+      - ./emby-config:/config
+      # 与 strm115 完全相同的宿主目录、相同的容器内路径 /media
+      - ${MEDIA_HOST_PATH:-./media}:/media
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 一次性引导（可选，默认不启动）：等两个服务起来 → 走完 Emby 向导 → 建 API Key
+  # → 写入设置 → 加 115 账号 → 建媒体库 → 全量同步 → 在 Emby 上建库并扫描。
+  #
+  # 正常用法是网页里点一遍，这个服务是给「无人值守 / 重建环境」准备的：
+  #   docker compose --profile auto run --rm bootstrap
+  # 前提：网页里已经设置过管理员账号密码（或 .env 里给了 ADMIN_USER/ADMIN_PASSWORD）。
+  #
+  # 跑完就退出，Exited (0) 是**正常状态**，不是崩溃。
+  bootstrap:
+    profiles: ["auto"]
+    image: strm115:${VERSION:-v0.4.5}
+    container_name: strm115-bootstrap
+    restart: "no"
+
+    # 绕开 entrypoint：那段脚本是为「写 .strm 需要对齐属主」准备的，
+    # 引导程序纯走 HTTP，不落盘。不绕开的话它会因为没挂 /media 而打一堆误导性警告。
+    entrypoint: ["/app/strm115"]
+    command: ["bootstrap"]
+    # 镜像里建好的非 root 用户；引导不需要任何写权限
+    user: "10001:10001"
+
+    depends_on:
+      strm115:
+        condition: service_healthy
+    # 注意：这里刻意不 depends_on emby —— emby 在 profile 里，
+    # 依赖一个未启用的服务会让 compose 直接报错。
+    # 等 Emby 靠程序内部的就绪探测（带超时，连不上就跳过 Emby 部分）。
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      BOOTSTRAP_STRM_URL: http://strm115:6060
+      # 引导程序要登录管理后台，用网页里设置的那个账号密码
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+
+      # .strm 里写的播放地址。必须是播放器/Emby 能访问到的地址，
+      # 不能是容器的 127.0.0.1，也不能是容器内网 IP。
+      PLAY_DOMAIN: ${PLAY_DOMAIN:-}
+
+      EMBY_URL: ${EMBY_URL:-http://emby:8096}
+      EMBY_SKIP: ${EMBY_SKIP:-0}
+      EMBY_ADMIN_USER: ${EMBY_ADMIN_USER:-admin}
+      EMBY_ADMIN_PASSWORD: ${EMBY_ADMIN_PASSWORD:-}
+      EMBY_API_KEY: ${EMBY_API_KEY:-}
+      EMBY_APP_NAME: ${EMBY_APP_NAME:-strm115}
+
+      # 115 登录。Cookie 是唯一不需要人工扫码的方式，格式：
+      #   UID=xxx; CID=xxx; SEID=xxx; KID=xxx
+      PAN115_COOKIE: ${PAN115_COOKIE:-}
+      PAN115_CID: ${PAN115_CID:-}
+      PAN115_ACCOUNT_NAME: ${PAN115_ACCOUNT_NAME:-115}
+
+      LIBRARY_NAME: ${LIBRARY_NAME:-115}
+      LIBRARY_TYPE: ${LIBRARY_TYPE:-movies}
+      LIBRARY_KEEP_EXT: ${LIBRARY_KEEP_EXT:-1}
+
+      # 等待窗口（秒）。同步没跑完不算失败，后台会继续。
+      BOOTSTRAP_WAIT_EMBY: ${BOOTSTRAP_WAIT_EMBY:-90}
+      BOOTSTRAP_WAIT_SYNC: ${BOOTSTRAP_WAIT_SYNC:-180}
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

@@ -1,0 +1,214 @@
+/* 基础层：重置、排版、滚动条、焦点环 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--foreground);
+  background-color: var(--bg-base);
+  background-image: var(--bg-wash);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior-y: none;
+}
+
+/*
+ * 背景分三层叠：
+ *   1. body 的底色渐变 —— 上亮下略深，暗色下有一点从暖到冷的过渡
+ *   2. ::before 三团柔光 —— 静态，靠 radial-gradient 自带的衰减出软边
+ *   3. ::after 细网点纹理 —— 只在页面上半部可见，像纸面颗粒
+ *
+ * 这里刻意**不用 filter: blur 也不用无限动画**：fixed 图层再叠一层大面积高斯模糊，
+ * 滚动时会持续重新合成，列表页几十张卡片时直接掉帧。渐变本身边缘就够软，
+ * 静态的三团光视觉效果几乎一样，代价是零。
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(52% 44% at 12% -6%, var(--bg-glow-1), transparent 68%),
+    radial-gradient(46% 40% at 92% -4%, var(--bg-glow-2), transparent 70%),
+    radial-gradient(64% 46% at 56% 108%, var(--bg-glow-3), transparent 72%);
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(var(--bg-grid) 1px, transparent 1px);
+  background-size: var(--bg-grid-size) var(--bg-grid-size);
+  -webkit-mask-image: radial-gradient(120% 78% at 50% -8%, #000 0%, rgb(0 0 0 / 0.3) 52%, transparent 88%);
+  mask-image: radial-gradient(120% 78% at 50% -8%, #000 0%, rgb(0 0 0 / 0.3) 52%, transparent 88%);
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+h1 {
+  font-size: 24px;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  font-weight: 650;
+}
+h2 {
+  font-size: 17px;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  font-weight: 620;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* 细滚动条，暗色下不刺眼 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--foreground) 18%, transparent);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 30%, transparent);
+  background-clip: padding-box;
+}
+
+/* ---------- 通用工具类 ---------- */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wrap {
+  flex-wrap: wrap;
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12.5px;
+}
+.strong {
+  font-weight: 600;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.center {
+  display: grid;
+  place-items: center;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.22s var(--ease-out-fluid);
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* 路由切换：只淡入，旧页面立即让位（没有 leave 过渡）。
+   配 out-in 用会让每次点菜单都多等一个「旧页面淡出」。 */
+.page-enter-active {
+  transition: opacity 0.14s ease-out;
+}
+.page-enter-from {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

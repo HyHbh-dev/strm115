@@ -1,0 +1,75 @@
+name: Docker
+
+# 构建并推送镜像到 GitHub Container Registry（GHCR）。
+#
+# 触发：
+#   - 推 main 分支        → 打 sha / latest 标签，只构建 amd64（快）
+#   - 打 v* 标签          → 打语义化版本标签，构建 amd64 + arm64（NAS 常见 arm64）
+#   - 手动 workflow_dispatch
+#
+# 结果：ghcr.io/<owner>/<repo>:<tag>，NAS 上直接 docker pull 即可，不必本机构建。
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR 要求仓库名全小写，github.repository 可能带大写（如 User/Repo），
+      # 直接用会导致 push 失败。
+      - name: 计算小写镜像名
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=strm115
+            org.opencontainers.image.description=115 网盘目录 → STRM → Emby/Jellyfin，播放 302 直连 CDN
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # 打标签时出双架构；日常 main 只出 amd64，省一半时间
+          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+            GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

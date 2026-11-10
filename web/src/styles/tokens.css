@@ -1,0 +1,149 @@
+/* ==========================================================================
+   设计令牌：与 StrmStation 同一套语义变量
+   - 两套配色：warm（默认，暖橙）/ fresh（青蓝）
+   - 亮暗由 html.dark 控制，避免组件里到处写颜色
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* 中性色 */
+  --white: #fff;
+  --eclipse: oklch(21% 0 0);
+  --background: oklch(97.02% 0 0);
+  --foreground: oklch(21% 0 0);
+  --surface: #fff;
+  --surface-secondary: oklch(95.24% 0.0013 286.37);
+  --surface-tertiary: oklch(93.73% 0.0013 286.37);
+  --overlay: #fff;
+  --default: oklch(94.5% 0.0015 286);
+  --segment: oklch(90% 0.002 286);
+  --border: oklch(89.5% 0.003 286);
+  --border-secondary: oklch(84% 0.004 286);
+  --separator: oklch(92% 0.002 286);
+  --muted: oklch(55.17% 0.0138 285.94);
+
+  /* 语义色 */
+  --accent: oklch(64% 0.175 46);
+  --accent-hover: oklch(59% 0.18 44);
+  --accent-foreground: #fff;
+  --accent-soft: oklch(64% 0.175 46 / 0.12);
+  --success: oklch(60% 0.14 150);
+  --success-soft: oklch(60% 0.14 150 / 0.12);
+  --warning: oklch(68% 0.15 72);
+  --warning-soft: oklch(68% 0.15 72 / 0.14);
+  --danger: oklch(58% 0.19 25);
+  --danger-soft: oklch(58% 0.19 25 / 0.12);
+  --info: oklch(58% 0.12 250);
+  --info-soft: oklch(58% 0.12 250 / 0.12);
+
+  /* 页面背景：一层底色 + 三团柔光 + 细网点纹理（见 base.css 的 body 规则） */
+  --bg-base: oklch(98.2% 0.005 78);
+  --bg-wash: linear-gradient(180deg, oklch(99.3% 0.009 82) 0%, oklch(98% 0.005 64) 46%, oklch(98.4% 0.004 258) 100%);
+  --bg-glow-1: oklch(72% 0.16 50 / 0.2);
+  --bg-glow-2: oklch(66% 0.11 248 / 0.13);
+  --bg-glow-3: oklch(70% 0.12 330 / 0.09);
+  --bg-grid: color-mix(in oklab, var(--foreground) 10%, transparent);
+  --bg-grid-size: 24px;
+
+  /* 玻璃层：只给浮层用（toast / 命令面板），不进列表卡片 */
+  --glass-bg: color-mix(in oklab, var(--surface) 92%, transparent);
+  --glass-blur: saturate(1.4) blur(10px);
+  --glass-border: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --glass-hi: inset 0 1px 0 rgb(255 255 255 / 0.55);
+  --overlay-shadow: 0 24px 60px -24px rgb(20 12 4 / 0.28);
+
+  /* 圆角 / 阴影 / 动效 */
+  --r-xs: 8px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 22px;
+  --r-full: 999px;
+  --shadow-sm: 0 1px 2px rgb(24 16 8 / 0.05), 0 2px 8px -4px rgb(24 16 8 / 0.08);
+  --shadow-md: 0 8px 24px -12px rgb(24 16 8 / 0.18);
+  --shadow-lg: 0 30px 70px -30px rgb(24 16 8 / 0.3);
+  --ease-out-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  /* 尺寸 */
+  --sidebar-w: 248px;
+  --topbar-h: 64px;
+  --z-sidebar: 40;
+  --z-overlay: 100000;
+  --z-toast: 100001;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+html[data-palette='fresh']:not(.dark) {
+  --accent: oklch(60% 0.13 218);
+  --accent-hover: oklch(55% 0.14 218);
+  --accent-soft: oklch(60% 0.13 218 / 0.12);
+
+  --bg-wash: linear-gradient(180deg, oklch(99.2% 0.007 215) 0%, oklch(98% 0.005 220) 48%, oklch(98.4% 0.004 260) 100%);
+  --bg-glow-1: oklch(68% 0.12 218 / 0.14);
+  --bg-glow-2: oklch(68% 0.13 300 / 0.09);
+  --bg-glow-3: oklch(70% 0.11 170 / 0.09);
+}
+
+html.dark {
+  color-scheme: dark;
+
+  --background: oklch(20.5% 0.005 60);
+  --foreground: oklch(96.5% 0.004 70);
+  --surface: oklch(25.5% 0.007 62);
+  --surface-secondary: oklch(29.5% 0.008 62);
+  --surface-tertiary: oklch(33% 0.008 62);
+  --overlay: oklch(27.5% 0.007 62);
+  --default: oklch(32% 0.008 62);
+  --segment: oklch(42% 0.009 62);
+  --border: oklch(33.5% 0.008 62);
+  --border-secondary: oklch(40% 0.009 62);
+  --separator: oklch(30.5% 0.007 62);
+  --muted: oklch(74% 0.012 70);
+
+  --accent: oklch(74% 0.16 52);
+  --accent-hover: oklch(78% 0.15 55);
+  --accent-foreground: oklch(18% 0.02 60);
+  --accent-soft: oklch(74% 0.16 52 / 0.16);
+
+  --success: oklch(74% 0.15 152);
+  --success-soft: oklch(74% 0.15 152 / 0.16);
+  --warning: oklch(80% 0.14 78);
+  --warning-soft: oklch(80% 0.14 78 / 0.16);
+  --danger: oklch(68% 0.19 22);
+  --danger-soft: oklch(68% 0.19 22 / 0.16);
+  --info: oklch(72% 0.11 250);
+  --info-soft: oklch(72% 0.11 250 / 0.16);
+
+  /* 暗色：底色抬到中灰而非近黑，光晕换成暖橙 / 靛蓝 / 品红，网点几乎看不见 */
+  --bg-base: oklch(20% 0.006 62);
+  --bg-wash: linear-gradient(180deg, oklch(23.4% 0.012 58) 0%, oklch(19.6% 0.006 250) 52%, oklch(18.6% 0.005 62) 100%);
+  --bg-glow-1: oklch(76% 0.15 54 / 0.24);
+  --bg-glow-2: oklch(66% 0.14 265 / 0.2);
+  --bg-glow-3: oklch(72% 0.13 330 / 0.11);
+  --bg-grid: color-mix(in oklab, var(--foreground) 6%, transparent);
+
+  --glass-bg: color-mix(in oklab, var(--overlay) 94%, transparent);
+  --glass-border: color-mix(in oklab, var(--foreground) 10%, transparent);
+  --glass-hi: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --overlay-shadow: 0 30px 80px -30px rgb(0 0 0 / 0.7);
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.28);
+  --shadow-md: 0 10px 30px -14px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 40px 80px -34px rgb(0 0 0 / 0.62);
+}
+
+html[data-palette='fresh'].dark {
+  --accent: oklch(72% 0.12 218);
+  --accent-hover: oklch(78% 0.11 218);
+  --accent-soft: oklch(72% 0.12 218 / 0.16);
+
+  --bg-wash: linear-gradient(180deg, oklch(23.6% 0.016 220) 0%, oklch(19.4% 0.008 240) 54%, oklch(18.4% 0.005 62) 100%);
+  --bg-glow-1: oklch(72% 0.12 218 / 0.15);
+  --bg-glow-2: oklch(66% 0.14 295 / 0.11);
+  --bg-glow-3: oklch(70% 0.12 170 / 0.08);
+}

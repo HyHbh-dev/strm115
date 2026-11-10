@@ -38,7 +38,7 @@ import (
 )
 
 // 构建时用 -ldflags "-X main.Version=v0.1.0" 注入
-var Version = "v0.5.0-dev"
+var Version = "v0.5.1-dev"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))

@@ -373,3 +373,84 @@ func TestPlaybackInfoWithoutResolverIsIgnored(t *testing.T) {
 		t.Fatalf("应该原样代理，实际 code=%d proxied=%d", rec.Code, *proxied)
 	}
 }
+
+// 第三方客户端（SenPlayer / Infuse / Fileball …）常把路径写成 `/emby/Videos/...`
+// 或干脆省掉 /emby 前缀。Emby 自己的路由不区分大小写，网关以前只认小写，
+// 结果这些播放器静默退回 Emby 中转 —— 公网下又慢又容易断。
+func TestThirdPartyClientPathsRedirect(t *testing.T) {
+	const cdn = "https://cdn.example.com/movie.mkv"
+	cases := []struct {
+		name, path, authHeader, authValue string
+	}{
+		{"大写 Videos", "/emby/Videos/437/stream?static=true", "X-Emby-Token", "tok"},
+		{"无前缀大写", "/Videos/437/stream.mkv?static=true", "X-Emby-Token", "tok"},
+		{"全大写", "/EMBY/VIDEOS/437/STREAM?static=true", "X-Emby-Token", "tok"},
+		{"大写 original", "/emby/Videos/437/original.mkv", "X-Emby-Token", "tok"},
+		{"大写 Download", "/emby/Items/437/Download", "X-Emby-Token", "tok"},
+		{"static 大写值", "/emby/Videos/437/stream?static=TRUE", "X-Emby-Token", "tok"},
+		{
+			"X-Emby-Authorization 抽 token", "/emby/Videos/437/stream?static=true",
+			"X-Emby-Authorization",
+			`MediaBrowser Client="SenPlayer", Device="iPhone", DeviceId="ios1", Version="3.2", Token="tok-from-auth"`,
+		},
+		{
+			"Authorization 抽 token", "/emby/Videos/437/stream?static=true",
+			"Authorization", `MediaBrowser Token="tok-from-auth2"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv?/F1.mkv"))
+			g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+				return cdn, nil
+			})
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set(tc.authHeader, tc.authValue)
+			req.Header.Set("User-Agent", "SenPlayer/3.2 CFNetwork/1496 Darwin/23.5")
+			rec := httptest.NewRecorder()
+			g.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("应该 302，实际 %d（body=%q）", rec.Code, rec.Body.String())
+			}
+			if loc := rec.Header().Get("Location"); loc != cdn {
+				t.Fatalf("Location = %q", loc)
+			}
+			if *proxied != 0 {
+				t.Fatalf("不该走 Emby 代理，实际 %d 次", *proxied)
+			}
+		})
+	}
+}
+
+// 大写路径的转码请求仍然必须留在 Emby，别因为放宽了大小写就把 m3u8 换成 mkv。
+func TestUppercaseTranscodeStaysOnEmby(t *testing.T) {
+	up, proxied := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv"))
+	g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+		t.Fatal("转码请求不该被接管")
+		return "", nil
+	})
+	req := httptest.NewRequest(http.MethodGet, "/emby/Videos/437/stream?VideoCodec=h264", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || *proxied != 1 {
+		t.Fatalf("应该原样代理，实际 code=%d proxied=%d", rec.Code, *proxied)
+	}
+}
+
+func TestEmbyTokenFallbackOrder(t *testing.T) {
+	g := &Gateway{opt: Options{APIKey: "server-key"}}
+	req := httptest.NewRequest(http.MethodGet, "/emby/Videos/1/stream", nil)
+	if got := g.embyToken(req); got != "server-key" {
+		t.Fatalf("没带任何 token 时该用兜底 Key，实际 %q", got)
+	}
+	req.Header.Set("X-Emby-Authorization", `MediaBrowser Client="SenPlayer", Token="abc123"`)
+	if got := g.embyToken(req); got != "abc123" {
+		t.Fatalf("应从 X-Emby-Authorization 抽出 token，实际 %q", got)
+	}
+	req.Header.Set("X-Emby-Token", "explicit")
+	if got := g.embyToken(req); got != "explicit" {
+		t.Fatalf("显式 X-Emby-Token 优先，实际 %q", got)
+	}
+}

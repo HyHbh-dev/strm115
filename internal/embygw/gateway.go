@@ -72,14 +72,24 @@ type Gateway struct {
 // 客户端取「原始文件」的几种路径形态：
 //
 //	/emby/videos/437/stream?static=true&MediaSourceId=mediasource_437
-//	/emby/videos/437/stream.mkv?static=true
+//	/emby/Videos/437/stream?static=true   ← SenPlayer / Infuse 这类第三方客户端
+//	/Videos/437/stream.mkv?static=true    ← 不带 /emby 前缀
 //	/emby/videos/437/original.mkv
 //	/emby/Items/437/Download
-var reStream = regexp.MustCompile(`^/(?:emby/)?(?:videos|audio)/([^/]+)/(?:stream|original)(?:\.[0-9a-zA-Z]+)?$`)
-var reDownload = regexp.MustCompile(`^/(?:emby/)?Items/([^/]+)/Download$`)
+//
+// (?i) 不能省：Emby 自己的路由不区分大小写，官方 API 文档写的是 `/Videos/{Id}/stream`
+// （大写 V），而 Emby Web 发的是小写 `videos`。以前正则只认小写，第三方客户端
+// 的请求全部落到反代 → Emby 自己读 .strm 中转字节，公网下又慢又容易断。
+var reStream = regexp.MustCompile(`(?i)^/(?:emby/)?(?:videos|audio)/([^/]+)/(?:stream|original)(?:\.[0-9a-zA-Z]+)?$`)
+var reDownload = regexp.MustCompile(`(?i)^/(?:emby/)?Items/([^/]+)/Download$`)
 
 // PlaybackInfo 是「客户端问怎么播」的那一步，永远早于真正的取流请求。
-var rePlaybackInfo = regexp.MustCompile(`^/(?:emby/)?Items/([^/]+)/PlaybackInfo$`)
+var rePlaybackInfo = regexp.MustCompile(`(?i)^/(?:emby/)?Items/([^/]+)/PlaybackInfo$`)
+
+// 第三方客户端的鉴权头：`MediaBrowser Client="...", Device="...", Token="xxx"`。
+// 它们往往不带 X-Emby-Token，只有这个复合头；抽不出 token 就查不到条目路径，
+// 网关会静默退回中转，现象是「有的客户端能直连、有的不能」。
+var reAuthToken = regexp.MustCompile(`(?i)Token\s*=\s*"?([^",\s]+)"?`)
 
 // New 构造网关。Upstream 解析不出来时返回错误（调用方据此不启用）。
 func New(opt Options) (*Gateway, error) {
@@ -125,6 +135,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	id, ok := streamItemID(r)
 	if !ok {
+		// 第三方客户端的路径写法、参数跟 Emby Web 常常不一样。留一行日志，
+		// 用户说「这个播放器没走直连」时不用靠猜它到底请求了什么。
+		// 只记主播放请求，HLS 分片（每秒一条）不在这里，免得刷屏。
+		if looksLikePlayRequest(r.URL.Path) {
+			g.log.Info("播放请求未接管，转回 Emby 中转",
+				"method", r.Method, "path", r.URL.Path,
+				"query", shortQuery(r.URL.RawQuery), "ua", uaLabel(r.UserAgent()))
+		}
 		g.proxy.ServeHTTP(w, r)
 		return
 	}
@@ -259,7 +277,8 @@ func streamItemID(r *http.Request) (string, bool) {
 	if m == nil {
 		return "", false
 	}
-	if strings.HasSuffix(p, "/original") || strings.Contains(p, "/original.") {
+	lower := strings.ToLower(p)
+	if strings.HasSuffix(lower, "/original") || strings.Contains(lower, "/original.") {
 		return m[1], true
 	}
 	q := r.URL.Query()
@@ -278,6 +297,14 @@ func (g *Gateway) embyToken(r *http.Request) string {
 	} {
 		if v != "" {
 			return v
+		}
+	}
+	for _, v := range []string{
+		r.Header.Get("X-Emby-Authorization"),
+		r.Header.Get("Authorization"),
+	} {
+		if m := reAuthToken.FindStringSubmatch(v); len(m) == 2 {
+			return m[1]
 		}
 	}
 	return g.opt.APIKey
@@ -376,6 +403,20 @@ func strmTarget(raw string) (string, bool) {
 		return "", false
 	}
 	return pick, true
+}
+
+// looksLikePlayRequest 只认「一次播放一个」的主请求，不含 HLS 分片。
+func looksLikePlayRequest(p string) bool {
+	l := strings.ToLower(p)
+	return strings.Contains(l, "/stream") || strings.Contains(l, "/original") ||
+		strings.Contains(l, "/download") || strings.Contains(l, "master.m3u8")
+}
+
+func shortQuery(q string) string {
+	if len(q) > 160 {
+		return q[:160]
+	}
+	return q
 }
 
 func uaLabel(ua string) string {

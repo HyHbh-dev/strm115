@@ -171,6 +171,18 @@ func (f *Fetcher) Fetch(ctx context.Context, root string, t Target, opt Options)
 	if len(list) == 0 {
 		return nil, ErrNoSubtitle
 	}
+	// 插件并不保证只回这一集：实测查 S01E199 时回来的是同一部剧的
+	// `Special II Ep 99` / `Ep 93`。片名相似度 + 片长能挡住大部分，但
+	// 「别的集的字幕恰好时长接近」是挡不住的，先用季集号硬筛一遍。
+	// 一条都不剩时按「对不上」而不是「没有字幕」报，用户才知道该去别处找。
+	list, dropped := filterByEpisode(list, t)
+	if len(list) == 0 && dropped > 0 {
+		return nil, fmt.Errorf("%w：返回的 %d 条字幕都不是 S%02dE%02d",
+			ErrMismatch, dropped, t.Season, t.Episode)
+	}
+	if len(list) == 0 {
+		return nil, ErrNoSubtitle
+	}
 
 	ranked := Rank(list, t.VideoName)
 
@@ -369,6 +381,30 @@ func (f *Fetcher) tryCandidates(ctx context.Context, rs []Ranked, opt Options,
 		return &r, file, raw, nil
 	}
 	return nil, nil, nil, firstErr
+}
+
+// filterByEpisode 按季集号筛掉「别的集」的字幕。
+//
+// 候选没带季/集号（0）时一律保留：插件对电影和部分老资源不填这两个字段，
+// 拿 0 当「不是这一集」会把这些片子全部误杀。
+func filterByEpisode(list []Candidate, t Target) ([]Candidate, int) {
+	if t.Episode <= 0 {
+		return list, 0
+	}
+	out := make([]Candidate, 0, len(list))
+	dropped := 0
+	for _, c := range list {
+		if c.Season > 0 && t.Season > 0 && c.Season != t.Season {
+			dropped++
+			continue
+		}
+		if c.Episode > 0 && c.Episode != t.Episode {
+			dropped++
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, dropped
 }
 
 // fitsRuntime 判断这份字幕是不是这部片的。

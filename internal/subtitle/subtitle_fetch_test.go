@@ -750,3 +750,75 @@ func TestFinalizeSubtitleOverwrite(t *testing.T) {
 		t.Fatal("只改时间戳，不能动 .strm 的内容")
 	}
 }
+
+// fakeSubsEpisodes 起一个假字幕服务，每条候选能指定季/集号。
+//
+// 插件返回的 episode 字段是它自己的标注，这里就是要模拟「标注成别的集」。
+func fakeSubsEpisodes(t *testing.T, srt string, eps ...[2]int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/subtitles/", func(w http.ResponseWriter, r *http.Request) {
+		var subs []map[string]any
+		for i, e := range eps {
+			subs = append(subs, map[string]any{
+				"id": fmt.Sprint(i), "url": srv.URL + "/file/" + fmt.Sprint(i),
+				"lang": "zho", "subtitleFileName": fmt.Sprintf("ep%d.srt", e[1]),
+				"movieReleaseName": fmt.Sprintf("A Record Of Mortal Ep %d", e[1]),
+				"SubEncoding":      "UTF-8",
+				"season":           e[0], "episode": e[1],
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"subtitles": subs})
+	})
+	mux.HandleFunc("/file/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-subrip; charset=utf-8")
+		io.WriteString(w, srt)
+	})
+	return srv
+}
+
+// TestFetchFiltersOtherEpisodes 盯住「插件把同一部剧其它集的字幕也返回」。
+//
+// 线上真实遇到：查 S01E199 时列表里是 `Special II Ep 99` / `Ep 93`，两条都被
+// 下载解析了一遍（只是片长对不上才被丢掉），既慢又可能撞上时长接近的错集。
+// 带集号的候选必须在下载之前就筛掉，并且按「对不上」报而不是「没有字幕」。
+func TestFetchFiltersOtherEpisodes(t *testing.T) {
+	srv := fakeSubsEpisodes(t, sampleSRT, [2]int{1, 93}, [2]int{1, 99})
+	f, _ := newFetcher(t)
+	f.Source = NewSource(srv.URL)
+	root := t.TempDir()
+
+	target := Target{
+		RelPath: "A/Season 1/A.S01E199.strm", VideoName: "A.S01E199.mkv",
+		IMDbID: "tt1", Kind: "series", Season: 1, Episode: 199,
+	}
+	_, err := f.Fetch(context.Background(), root, target, Options{Translate: true})
+	if !errors.Is(err, ErrMismatch) {
+		t.Fatalf("别的集的字幕应报 ErrMismatch，实际 %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "A/Season 1/A.S01E199.zh.srt")); statErr == nil {
+		t.Fatal("对不上的字幕不该落盘")
+	}
+}
+
+// TestFetchPicksMatchingEpisode 混着别的集时，正好那一集仍然要能用。
+func TestFetchPicksMatchingEpisode(t *testing.T) {
+	srv := fakeSubsEpisodes(t, sampleSRT, [2]int{1, 99}, [2]int{1, 199})
+	f, _ := newFetcher(t)
+	f.Source = NewSource(srv.URL)
+	root := t.TempDir()
+
+	target := Target{
+		RelPath: "A/Season 1/A.S01E199.strm", VideoName: "A.S01E199.mkv",
+		IMDbID: "tt1", Kind: "series", Season: 1, Episode: 199,
+	}
+	if _, err := f.Fetch(context.Background(), root, target, Options{Translate: false}); err != nil {
+		t.Fatalf("应该选中 E199 那条：%v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "A/Season 1/A.S01E199.zh.srt")); statErr != nil {
+		t.Fatalf("字幕没落盘：%v", statErr)
+	}
+}

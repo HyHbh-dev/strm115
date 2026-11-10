@@ -10,18 +10,20 @@
  * 一轮搜索把两类源都搜回来，上面的「全部 / 种子站 / TG 频道」只做本地过滤，
  * 不会重新打网络；后端还有几分钟的结果缓存，想拿最新的点「重搜」。
  *
- * 来源清单存在设置项里（tg_channels / res_sites），这个页面直接改，不用去别处找。
+ * 来源清单（tg_channels / res_sites / res_sites_custom）在「系统配置 → 资源来源」里改，
+ * 这个页面只负责搜，以及把认出的 115 分享一键转存。
  */
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import TitlePicker from '@/components/TitlePicker.vue'
 import HPanel from '@/components/HPanel.vue'
 import HField from '@/components/HField.vue'
-import HSwitch from '@/components/HSwitch.vue'
 import HEmpty from '@/components/HEmpty.vue'
 import DirPicker from '@/components/DirPicker.vue'
+import SubscribeDialog from '@/components/SubscribeDialog.vue'
 import { api } from '@/api/endpoints'
 import { toast } from '@/stores/toast'
+import { loadSubsIndex, subIdOf, subsVersion } from '@/stores/subscriptions'
 import { fmtSize, KIND_FILTERS, SIZE_FILTERS, useResSearch } from '@/composables/useResSearch'
 import type { ResItem } from '@/composables/useResSearch'
 import { use115Share } from '@/composables/use115Share'
@@ -260,311 +262,32 @@ function firstLink(it: { magnet?: string; torrent?: string; url?: string; links?
   return it.magnet || it.torrent || it.url || it.links?.[0] || ''
 }
 
-/* ---------------- 来源配置 ---------------- */
-// 内置种子站。key 对应后端 resource.Sites()。
-const SITES = [
-  { key: 'tpb', name: '海盗湾', desc: '英文综合站，片源最全，中文搜不到需用英文名' },
-  { key: 'nyaa', name: 'Nyaa', desc: '日系资源，动漫/日剧补全' },
-  { key: 'dmhy', name: '动漫花园', desc: '中文字幕组，RSS 可按字幕组分流' },
-  { key: 'mikan', name: 'Mikan', desc: '蜜柑计划，番剧按季整理' },
-  { key: 'uindex', name: 'UIndex', desc: '影视/剧集表格站，磁力直接给；部分 IP 会遇 Cloudflare' },
-  { key: 'therarbg', name: 'TheRarBG', desc: 'RARBG 镜像，按做种排序；磁力要翻详情页' },
-  { key: 'clm', name: '磁力猫', desc: '中文 DHT 索引，中文片名直接搜；磁力由 infohash 拼出' },
-]
-
-// 与后端 resource.DefaultChannels 保持一致：只放 115 / 夸克方向的频道。
-// 阿里、百度的频道留着没意义 —— 这个项目的转存只有 115 一条路。
-const DEFAULT_CHANNELS = ['QukanMovie', 'yunpanquark', 'quarkshare']
-
-interface TestResult {
-  kind: string
-  name: string
-  ok: boolean
-  count: number
-  ms: number
-  query?: string
-  url?: string
-  error?: string
-  notice?: string
-  samples?: string[]
-  cached?: boolean
-}
-
-interface CustomRow {
-  name: string
-  url: string
-  raw: string // 保存时原样写回，解析交给后端
-}
-
-const channelList = ref<string[]>([])
-const customList = ref<CustomRow[]>([])
-const enabledSites = ref<string[]>(SITES.map((s) => s.key))
-const savedSig = ref('')
-
-const newChannel = ref('')
-const newCustom = ref('')
-
-const loadingCfg = ref(false)
-const savingCfg = ref(false)
-const testingAll = ref(false)
-// 测试结果按 target 存：频道名 / 站 key / 自定义源那一行，三者不会撞车。
-const tests = ref<Record<string, TestResult>>({})
-const testing = ref<Record<string, boolean>>({})
-
-onMounted(async () => {
-  await Promise.all([loadCfg(), loadShareTarget()])
+onMounted(() => {
+  void loadShareTarget()
+  // 订阅按钮要能立刻判断「这部订过没」；store 内部有 loaded 缓存，重复调无害。
+  void loadSubsIndex()
 })
 
-/** 把 @xxx、t.me/xxx、尾部斜杠都收敛成纯频道名。 */
-function normalizeChannel(raw: string) {
-  let s = raw.trim()
-  if (!s) return ''
-  s = s.replace(/^@/, '')
-  const i = s.toLowerCase().indexOf('t.me/')
-  if (i >= 0) s = s.slice(i + 5).replace(/^s\//, '')
-  return s.replace(/\/+$/, '').trim()
-}
-
 /**
- * 与后端 NormalizeChannels 对齐。Telegram 的 username 只能是 ASCII 字母数字下划线，
- * 「Torrent Search Bot 🔎」这类频道**显示名**不是 username —— 按空格拆会变成
- * 四个不存在的频道，每个都白打一次 t.me 还占并发槽。含空格又带非 ASCII 的整条丢掉。
+ * 只有认片锁定、且命中 TMDB 的条目才能订阅：专有日历靠 tmdb_id 拉集数，
+ * 豆瓣条目没有 TMDB id，硬建一条订阅只会永远停在「查不到集数」。
  */
-function parseChannelSetting(raw: string): string[] {
-  const entries = String(raw || '').split(/[,，;；、\n\r]+/)
-  const kept = entries.filter((e) => !(/\s/.test(e) && /[^\x00-\x7F]/.test(e)))
-  return kept
-    .join(',')
-    .split(/[,，\s;；、]+/)
-    .map(normalizeChannel)
-    .filter((x) => /[A-Za-z0-9]/.test(x))
+const canSubscribe = computed(
+  () => !!picked.value && picked.value.source !== 'douban' && picked.value.id > 0,
+)
+const currentSubId = computed(() => {
+  void subsVersion.value // 订阅增删后强制重算
+  const h = picked.value
+  if (!h || !canSubscribe.value) return 0
+  return subIdOf(h.kind === 'tv' ? 'tv' : 'movie', h.id)
+})
+const subOpen = ref(false)
+
+function onSubscribed() {
+  // 弹窗里已经 rememberSub + 强刷索引，这里只把订阅页的表格也标脏。
+  void loadSubsIndex(true)
 }
 
-function uniq(list: string[]) {
-  const seen = new Set<string>()
-  return list.filter((x) => {
-    const k = x.toLowerCase()
-    if (!k || seen.has(k)) return false
-    seen.add(k)
-    return true
-  })
-}
-
-function hostOf(u: string) {
-  try {
-    return new URL(u).host
-  } catch {
-    return u
-  }
-}
-
-/** 前端的显示用解析，规则和后端 ParseCustomSites 对齐（真正的解析在后端）。 */
-function parseCustomLine(line: string): CustomRow | null {
-  const s = line.trim()
-  if (!s || s.startsWith('#')) return null
-  let name = ''
-  let url = ''
-  const byBar = s.match(/^([\s\S]+?)\s*[|｜]\s*(https?:\/\/\S+)$/i)
-  if (byBar) {
-    name = byBar[1].trim()
-    url = byBar[2].trim()
-  } else {
-    const parts = s.split(/\s+/)
-    const i = parts.findIndex((x) => /^https?:\/\//i.test(x))
-    if (i >= 0) {
-      url = parts[i]
-      name = parts.slice(0, i).join(' ')
-    }
-  }
-  if (!url) return null
-  return { name: name || hostOf(url), url, raw: s }
-}
-
-function signature() {
-  return JSON.stringify([channelList.value, enabledSites.value, customList.value.map((c) => c.raw)])
-}
-
-async function loadCfg() {
-  loadingCfg.value = true
-  try {
-    const s: any = await api.config.settings()
-    const chs = parseChannelSetting(s?.tg_channels)
-    channelList.value = chs.length ? uniq(chs) : DEFAULT_CHANNELS.slice()
-
-    const list = String(s?.res_sites || '')
-      .split(/[,，\s]+/)
-      .map((x) => x.trim().toLowerCase())
-      .filter(Boolean)
-    // 没配过就用后端默认（四站全开）
-    enabledSites.value = list.length ? list : SITES.map((x) => x.key)
-
-    customList.value = String(s?.res_sites_custom || '')
-      .split('\n')
-      .map(parseCustomLine)
-      .filter((x): x is CustomRow => !!x)
-
-    savedSig.value = signature()
-  } catch {
-    /* 拉不到就用默认值，搜索不受影响 */
-  } finally {
-    loadingCfg.value = false
-  }
-}
-
-function toggleSite(key: string, on: boolean) {
-  const set = new Set(enabledSites.value)
-  if (on) set.add(key)
-  else set.delete(key)
-  enabledSites.value = SITES.map((s) => s.key).filter((k) => set.has(k))
-}
-
-function addChannel() {
-  const ch = normalizeChannel(newChannel.value)
-  if (!ch) return
-  // 频道显示名（带空格 / emoji / 中文）不是 username，贴进来只会白打请求。
-  if (/\s|[^\x00-\x7F]/.test(ch)) {
-    toast.warning('要填频道 username（如 QukanMovie），不是频道显示名')
-    return
-  }
-  // 以 bot 结尾的是机器人，没有 t.me/s 网页预览页，加进来永远 0 条结果。
-  // 这类机器人（搜索结果转发号）能搜到内容的前提是有人把它的结果**转发进频道**，
-  // 直接搜机器人本身是搜不到东西的。
-  if (/bot$/i.test(ch)) {
-    toast.warning(
-      `@${ch} 是机器人，不是频道`,
-      't.me 的网页预览只支持公开频道，机器人搜不到。请换成把结果转发出来的资源频道。',
-    )
-    return
-  }
-  if (channelList.value.some((x) => x.toLowerCase() === ch.toLowerCase())) {
-    toast.warning('这个频道已经在列表里了')
-    newChannel.value = ''
-    return
-  }
-  channelList.value.push(ch)
-  newChannel.value = ''
-}
-
-function removeChannel(ch: string) {
-  channelList.value = channelList.value.filter((x) => x !== ch)
-  delete tests.value[ch]
-}
-
-function addCustom() {
-  const row = parseCustomLine(newCustom.value)
-  if (!row) {
-    toast.warning('地址不对', '应该像：我的站 | https://example.com/api?apikey=xxx&q={q}')
-    return
-  }
-  if (customList.value.some((c) => c.url === row.url)) {
-    toast.warning('这个地址已经加过了')
-    return
-  }
-  customList.value.push(row)
-  newCustom.value = ''
-}
-
-function removeCustom(row: CustomRow) {
-  customList.value = customList.value.filter((c) => c.raw !== row.raw)
-  delete tests.value[row.raw]
-}
-
-/**
- * 测一个源。测的是「输入框里的值」而不是「已保存的值」——
- * 用户填完地址就想知道能不能用，不该逼他先保存。
- */
-async function testOne(kind: 'tg' | 'site' | 'custom', target: string) {
-  if (!target || testing.value[target]) return
-  testing.value[target] = true
-  try {
-    const r: any = await api.transfer.resTest({ kind, target })
-    tests.value[target] = r
-  } catch (e: any) {
-    tests.value[target] = {
-      kind,
-      name: target,
-      ok: false,
-      count: 0,
-      ms: 0,
-      error: e?.message || '测试失败',
-    }
-  } finally {
-    testing.value[target] = false
-  }
-}
-
-/**
- * 分批跑：t.me 对同一 IP 的并发很敏感，三个频道一起打过去经常有一个卡到超时。
- * 3 个一批既不慢（每批 1~2 秒），也不会把自己测成红的。
- */
-async function mapLimit<T>(items: T[], limit: number, fn: (x: T) => Promise<unknown>) {
-  const queue = items.slice()
-  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-      await fn(next)
-    }
-  })
-  await Promise.all(workers)
-}
-
-async function testAll() {
-  testingAll.value = true
-  const jobs: Array<['tg' | 'site' | 'custom', string]> = [
-    ...channelList.value.map((c) => ['tg', c] as ['tg', string]),
-    ...enabledSites.value.map((k) => ['site', k] as ['site', string]),
-    ...customList.value.map((c) => ['custom', c.raw] as ['custom', string]),
-  ]
-  await mapLimit(jobs, 3, ([k, t]) => testOne(k, t))
-  testingAll.value = false
-  const bad = jobs.filter(([, t]) => tests.value[t] && !tests.value[t].ok).length
-  if (!bad) toast.success('全部可用', `测了 ${jobs.length} 个源`)
-  else toast.warning(`${bad} 个源有问题`, '看每个源后面的红字')
-}
-
-async function saveCfg() {
-  savingCfg.value = true
-  try {
-    await api.config.saveSettings({
-      tg_channels: channelList.value.join(','),
-      res_sites: enabledSites.value.join(','),
-      res_sites_custom: customList.value.map((c) => c.raw).join('\n'),
-    })
-    savedSig.value = signature()
-    toast.success('来源配置已保存', '下一轮搜索立即生效')
-  } catch (e: any) {
-    toast.warning('保存失败', e?.message)
-  } finally {
-    savingCfg.value = false
-  }
-}
-
-const dirty = () => signature() !== savedSig.value
-
-/** 测试结果的一句话（失败时尽量把原因说全）。 */
-function testText(key: string) {
-  const r = tests.value[key]
-  if (!r) return ''
-  if (!r.ok) return r.error || '失败'
-  // 标一下缓存：否则「秒回 0ms」会让人以为 t.me 比本地还快
-  return `${r.count} 条 · ${r.ms}ms${r.cached ? ' · 缓存' : ''}`
-}
-
-function testTone(key: string) {
-  const r = tests.value[key]
-  if (!r) return ''
-  return r.ok ? 'badge-success' : 'badge-danger'
-}
-
-function testTip(key: string) {
-  const r = tests.value[key]
-  if (!r) return ''
-  if (!r.ok) return r.error || ''
-  const parts = [`探活词：${r.query || '（不带关键词）'}`]
-  if (r.notice) parts.push(r.notice)
-  if (r.url) parts.push(r.url)
-  if (r.samples?.length) parts.push(...r.samples.map((s) => '· ' + s))
-  return parts.join('\n')
-}
 </script>
 
 <template>
@@ -683,6 +406,16 @@ function testTip(key: string) {
             <span class="badge">{{ picked.kind === 'tv' ? '剧集' : '电影' }}</span>
           </span>
           <span class="grow" />
+          <button
+            v-if="canSubscribe"
+            class="btn btn-sm"
+            :class="currentSubId ? 'btn-tertiary' : 'btn-primary'"
+            :title="currentSubId ? '已经在订阅里了' : picked?.kind === 'tv' ? '按 TMDB 集数选起始集' : '有资源就自动下载'"
+            @click="subOpen = true"
+          >
+            <AppIcon :name="currentSubId ? 'check' : 'plus'" :size="14" />
+            {{ currentSubId ? '已订阅' : picked?.kind === 'tv' ? '订阅追更' : '订阅' }}
+          </button>
           <button class="btn btn-sm btn-tertiary" title="看海报、简介与入库状态" @click="openTitle">
             <AppIcon name="info" :size="14" />详情
           </button>
@@ -813,7 +546,7 @@ function testTip(key: string) {
           :title="res.error.value || (res.result.value ? '这几个源都没搜到' : '还没开始搜')"
           :desc="
             res.result.value
-              ? '换英文名再试，或放开体积筛选；也可以到下面开更多来源'
+              ? '换英文名再试，或放开体积筛选；也可以到「系统配置 → 资源来源」加更多来源'
               : '中文名直接搜就行，后端会去 IMDb 换英文名'
           "
           icon="search"
@@ -821,155 +554,8 @@ function testTip(key: string) {
       </div>
     </HPanel>
 
-    <!-- 来源配置 -->
-    <HPanel
-      title="资源来源"
-      desc="TG 频道和种子站都可以自己加，每个源后面都能单独测一次"
-    >
-      <template #actions>
-        <button class="btn btn-sm btn-tertiary" :disabled="testingAll" @click="testAll">
-          {{ testingAll ? '测试中…' : '全部测试' }}
-        </button>
-        <button class="btn btn-sm btn-primary" :disabled="savingCfg || !dirty()" @click="saveCfg">
-          {{ savingCfg ? '保存中…' : dirty() ? '保存' : '已保存' }}
-        </button>
-      </template>
-
-      <!-- TG 频道 -->
-      <div class="src-head">
-        <strong class="small">TG 频道</strong>
-        <span class="muted small">
-          只留 115 / 夸克方向的频道 —— 别的网盘链接转不进 115，摆着只是噪音
-        </span>
-      </div>
-      <div class="src-list">
-        <div v-for="ch in channelList" :key="ch" class="src-row">
-          <span class="avatar">TG</span>
-          <div class="grow" style="min-width: 0">
-            <div class="row wrap" style="gap: 8px">
-              <strong class="small">@{{ ch }}</strong>
-              <span
-                v-if="tests[ch]"
-                class="badge mono"
-                :class="testTone(ch)"
-                :title="testTip(ch)"
-              >
-                {{ testText(ch) }}
-              </span>
-            </div>
-            <p class="muted small mono truncate">t.me/{{ ch }}</p>
-          </div>
-          <button
-            class="btn btn-sm btn-tertiary"
-            :disabled="!!testing[ch]"
-            @click="testOne('tg', ch)"
-          >
-            {{ testing[ch] ? '测试中…' : '测试' }}
-          </button>
-          <button class="btn btn-sm btn-ghost" title="移除这个频道" @click="removeChannel(ch)">
-            ×
-          </button>
-        </div>
-        <div class="src-add">
-          <input
-            v-model="newChannel"
-            class="input"
-            placeholder="频道 username，如 @QukanMovie 或 t.me/s/QukanMovie"
-            @keydown.enter="addChannel"
-          />
-          <button class="btn btn-tertiary" @click="addChannel">添加</button>
-        </div>
-        <p class="muted small" style="margin-top: 6px">
-          要填 username，不是「Torrent Search Bot 🔎」这类频道显示名；显示名无法用 t.me/s/ 预览页检索。
-        </p>
-      </div>
-
-      <!-- 内置种子站 -->
-      <div class="src-head">
-        <strong class="small">内置种子站</strong>
-        <span class="muted small">打开开关才参与检索</span>
-      </div>
-      <div class="src-list">
-        <div v-for="s in SITES" :key="s.key" class="src-row">
-          <span class="avatar">{{ s.name.slice(0, 1) }}</span>
-          <div class="grow" style="min-width: 0">
-            <div class="row wrap" style="gap: 8px">
-              <strong class="small">{{ s.name }}</strong>
-              <span class="badge mono">{{ s.key }}</span>
-              <span
-                v-if="tests[s.key]"
-                class="badge mono"
-                :class="testTone(s.key)"
-                :title="testTip(s.key)"
-              >
-                {{ testText(s.key) }}
-              </span>
-            </div>
-            <p class="muted small truncate">{{ s.desc }}</p>
-          </div>
-          <button
-            class="btn btn-sm btn-tertiary"
-            :disabled="!!testing[s.key]"
-            @click="testOne('site', s.key)"
-          >
-            {{ testing[s.key] ? '测试中…' : '测试' }}
-          </button>
-          <HSwitch
-            :model-value="enabledSites.includes(s.key)"
-            :label="s.name"
-            @update:model-value="(v: boolean) => toggleSite(s.key, v)"
-          />
-        </div>
-      </div>
-
-      <!-- 自定义源 -->
-      <div class="src-head">
-        <strong class="small">自定义源</strong>
-        <span class="muted small">
-          填 RSS / Torznab 搜索地址，{q} 会被换成关键词；Jackett、Prowlarr 的地址直接粘
-        </span>
-      </div>
-      <div class="src-list">
-        <div v-for="c in customList" :key="c.raw" class="src-row">
-          <span class="avatar">RSS</span>
-          <div class="grow" style="min-width: 0">
-            <div class="row wrap" style="gap: 8px">
-              <strong class="small">{{ c.name }}</strong>
-              <span
-                v-if="tests[c.raw]"
-                class="badge mono"
-                :class="testTone(c.raw)"
-                :title="testTip(c.raw)"
-              >
-                {{ testText(c.raw) }}
-              </span>
-            </div>
-            <p class="muted small mono truncate" :title="c.url">{{ c.url }}</p>
-          </div>
-          <button
-            class="btn btn-sm btn-tertiary"
-            :disabled="!!testing[c.raw]"
-            @click="testOne('custom', c.raw)"
-          >
-            {{ testing[c.raw] ? '测试中…' : '测试' }}
-          </button>
-          <button class="btn btn-sm btn-ghost" title="移除这个源" @click="removeCustom(c)">×</button>
-        </div>
-        <div class="src-add">
-          <input
-            v-model="newCustom"
-            class="input mono"
-            placeholder="我的站 | https://example.com/api?apikey=xxx&q={q}"
-            @keydown.enter="addCustom"
-          />
-          <button class="btn btn-tertiary" @click="addCustom">添加</button>
-        </div>
-        <p v-if="!customList.length" class="muted small" style="padding: 0 2px">
-          私有站、PT 站、小型资源站大多没有公开搜索页，但几乎都有 RSS（或 Jackett / Prowlarr
-          聚合出来的 Torznab）。把地址填进来就能和内置站一起搜。
-        </p>
-      </div>
-
+    <!-- 转存目录；来源清单已搬到「系统配置 → 资源来源」 -->
+    <HPanel title="转存目录" desc="TG 频道、种子站和自定义 RSS 源在「系统配置 → 资源来源」里配置">
       <HField
         label="转存目录"
         tip="资源里认出 115 分享后，一键转存落到这里"
@@ -982,28 +568,15 @@ function testTip(key: string) {
           </button>
         </div>
       </HField>
-
-      <div class="grid-3" style="margin-top: 14px">
-        <div class="tipbox">
-          <strong>中文 → 英文</strong>
-          <p class="muted small">命中中文片名时先查 IMDb 取官方英文名，再搜种子站。</p>
-        </div>
-        <div class="tipbox">
-          <strong>相关性优先</strong>
-          <p class="muted small">种子站返回热门无关项时按片名与年份重排，宁缺毋滥。</p>
-        </div>
-        <div class="tipbox">
-          <strong>识别 115 分享</strong>
-          <p class="muted small">
-            TG 帖子的 115 链接 / 分享码会被正则认出来，点「存到 115」直接转存，不用打开网页。<br />
-            夸克分享（yunpanquark / quarkshare 这类频道）会标出分享码，点「存到夸克」走网页
-            Cookie 转存 —— 播放由夸克TV 的 302 直链接管，不经过 115。
-          </p>
-        </div>
-      </div>
+      <p class="muted small" style="margin-top: 10px">
+        搜索用的 TG 频道、内置种子站、自定义 RSS 源与连通性测试，已移到
+        <RouterLink to="/settings?tab=resource">系统配置 → 资源来源</RouterLink>；
+        改完保存，下一轮搜索立即生效。
+      </p>
     </HPanel>
 
     <DirPicker v-model="dirPicker" @pick="onPickDir" />
+    <SubscribeDialog v-model="subOpen" :hit="picked" @subscribed="onSubscribed" />
   </div>
 </template>
 
@@ -1066,65 +639,5 @@ function testTip(key: string) {
 }
 .res-hit:active {
   opacity: 0.75;
-}
-.src-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin: 4px 0 8px;
-}
-.src-head + .src-list + .src-head {
-  margin-top: 20px;
-}
-.src-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.src-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: var(--surface-secondary);
-}
-/* 添加行：输入框吃掉剩余宽度，按钮不被挤扁 */
-.src-add {
-  display: flex;
-  gap: 8px;
-  margin-top: 2px;
-}
-.src-add .input {
-  flex: 1;
-  min-width: 0;
-}
-.avatar {
-  flex: none;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  display: grid;
-  place-items: center;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--accent-foreground);
-  background: var(--accent);
-}
-.tipbox {
-  padding: 14px;
-  border-radius: var(--r-md);
-  background: var(--surface-secondary);
-  border: 1px solid var(--border);
-}
-.tipbox strong {
-  font-size: 13px;
-}
-.tipbox p {
-  margin-top: 4px;
-  line-height: 1.6;
 }
 </style>

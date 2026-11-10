@@ -123,10 +123,12 @@ func (s *Server) handleCreateSub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 剧集：用 TMDB 校正标题、年份、IMDb ID 和总集数。
+	var show *tmdb.TVShow
+	var err error
 	if sub.MediaType == "tv" {
 		client := s.tmdbClient(ctx)
 		if client != nil {
-			show, err := client.TV(ctx, sub.TMDbID)
+			show, err = client.TV(ctx, sub.TMDbID)
 			if err != nil {
 				// 查不到就不让建：建一条判断不了集数的订阅，只会永远停在 waiting。
 				writeErr(w, http.StatusBadGateway,
@@ -157,7 +159,24 @@ func (s *Server) handleCreateSub(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id})
+
+	// 剧集：把 TMDB 的集数集合物化成「这一部剧专属」的播放日历。
+	// 失败不回滚订阅 —— 订阅本身已经能用，日历可以由巡检或手动刷新补上。
+	// 复用刚才那次 TV() 的结果，不再打一遍 TMDB。
+	calendarTotal := 0
+	if sub.MediaType == "tv" && show != nil {
+		if client := s.tmdbClient(ctx); client != nil {
+			withID := sub
+			withID.ID = id
+			n, calErr := s.materializeCalendar(ctx, withID, show, client)
+			if calErr != nil {
+				s.log.Warn("订阅建好了，但专有日历没生成", "id", id, "err", calErr)
+			} else {
+				calendarTotal = n
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "calendar_total": calendarTotal})
 }
 
 // handleUpdateSub 改画质、体积、库、目录、状态。
@@ -235,6 +254,17 @@ func (s *Server) handleUpdateSub(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		// 专有日历要跟着起播线走：往后挪 = 前面的集不再搜；往前挪 = 之前
+		// 跳过的集恢复待搜。只改订阅表不改日历的话，界面和轮询器会各说各话。
+		if err := s.st.SkipEpisodesBefore(r.Context(), id,
+			*body.WatermarkSeason, *body.WatermarkEpisode); err != nil {
+			s.log.Warn("同步起播线到专有日历失败", "id", id, "err", err)
+		}
+		if err := s.st.UnskipEpisodesAfter(r.Context(), id,
+			*body.WatermarkSeason, *body.WatermarkEpisode,
+			time.Now().Format("2006-01-02")); err != nil {
+			s.log.Warn("恢复起播线之后的集失败", "id", id, "err", err)
+		}
 		// 手改起播线是高影响操作（往前挪会直接跳过若干集），留一行日志备查。
 		s.log.Info("订阅起播线被手改",
 			"id", id, "season", *body.WatermarkSeason, "episode", *body.WatermarkEpisode)
@@ -256,6 +286,10 @@ func (s *Server) handleDeleteSub(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeErr(w, http.StatusNotFound, errors.New("订阅不存在"))
 		return
+	}
+	// 订阅没了，它那份专有日历也不能留：否则周历里会冒出没有归属的集。
+	if err := s.st.DeleteSubscriptionEpisodes(r.Context(), id); err != nil {
+		s.log.Warn("删除订阅专有日历失败", "id", id, "err", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

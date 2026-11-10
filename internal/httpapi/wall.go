@@ -72,21 +72,14 @@ type wallPayload struct {
 //
 // 做成白名单有两个原因：URL 参数直接进查询变量，不能让任意字符串透传；
 // 另外前端筛选条要用同一份清单，从后端拿就不会两边对不上。
-// TMDB 那一列是 watch providers 的数字 ID（8=Netflix，9=Prime Video…）。
-//
-// 国内平台分两种：
-//   - TMDB 收录了 provider ID 的（腾讯视频 623 / 爱奇艺 581 / WeTV 509），
-//     按 ID 真查片单。TMDB 的 CN 区 watch providers 是空的，这几家在
-//     US/HK/SG 等区有数据，所以仍按默认 US 区查。
-//   - TMDB 完全没有 provider 数据的（优酷 / 芒果TV / 哔哩哔哩 / 咪咕），
-//     TMDB=0，选中时退回「国产内容」榜（with_origin_country=CN）。
-//     Note 会显示在筛选条上，明确这不是该平台的真实上架片单，避免误导。
+// TMDB 那一列是 watch providers 的数字 ID（8=Netflix，9=Prime Video…），
+// 每个平台都按这个 ID 真查片单，不做兜底。
 var providerCodes = []struct {
 	Code  string `json:"code"`
 	Name  string `json:"name"`
 	TMDB  int    `json:"tmdb"`
-	Group string `json:"group"`          // overseas / cn
-	Note  string `json:"note,omitempty"` // 兜底说明，显示在 chip 上
+	Group string `json:"group"`          // overseas
+	Note  string `json:"note,omitempty"` // 备注（可选），显示在 chip 上
 }{
 	{"nfx", "Netflix", 8, "overseas", ""},
 	{"amp", "Prime Video", 9, "overseas", ""},
@@ -96,14 +89,6 @@ var providerCodes = []struct {
 	{"hlu", "Hulu", 15, "overseas", ""},
 	{"ppm", "Paramount+", 531, "overseas", ""},
 	{"pcp", "Peacock", 386, "overseas", ""},
-
-	{"tx", "腾讯视频", 623, "cn", ""},
-	{"iqy", "爱奇艺", 581, "cn", ""},
-	{"wetv", "WeTV", 509, "cn", ""},
-	{"yku", "优酷", 0, "cn", "TMDB 没有优酷片单，按国产内容推荐"},
-	{"mgtv", "芒果TV", 0, "cn", "TMDB 没有芒果TV片单，按国产内容推荐"},
-	{"bili", "哔哩哔哩", 0, "cn", "TMDB 没有哔哩哔哩片单，按国产内容推荐"},
-	{"migu", "咪咕视频", 0, "cn", "TMDB 没有咪咕视频片单，按国产内容推荐"},
 }
 
 type wallProvider struct {
@@ -219,17 +204,13 @@ func (s *Server) wallFromTMDB(w http.ResponseWriter, r *http.Request, ctx contex
 	sortBy := defaultString(strings.TrimSpace(q.Get("sort")), tmdb.SortPopular)
 
 	ids := make([]int, 0, len(providers))
-	originCountry := ""
 	for _, code := range providers {
 		if id := tmdbProviderID(code); id > 0 {
 			ids = append(ids, id)
-		} else if p := providerByCode(code); p != nil && p.TMDB == 0 {
-			// 没有 provider 数据的国内平台：退回国产内容榜。
-			originCountry = "CN"
 		}
 	}
 
-	key := wallCacheKey(kind, providers, genre, sortBy, page, region, originCountry, limit)
+	key := wallCacheKey(kind, providers, genre, sortBy, page, region, "", limit)
 	if !refresh {
 		if cached, ok := s.readWallCache(ctx, key); ok {
 			s.writeWall(w, cached, true, kind)
@@ -239,14 +220,13 @@ func (s *Server) wallFromTMDB(w http.ResponseWriter, r *http.Request, ctx contex
 
 	client := tmdb.NewClient(s.tmdbKey(ctx))
 	pg, err := client.Discover(ctx, tmdb.Query{
-		Kind:          kind,
-		Providers:     ids,
-		Genre:         tmdb.GenreID(kind, genre),
-		Sort:          sortBy,
-		Page:          page,
-		Region:        region,
-		Language:      tmdb.DefaultLanguage,
-		OriginCountry: originCountry,
+		Kind:      kind,
+		Providers: ids,
+		Genre:     tmdb.GenreID(kind, genre),
+		Sort:      sortBy,
+		Page:      page,
+		Region:    region,
+		Language:  tmdb.DefaultLanguage,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)

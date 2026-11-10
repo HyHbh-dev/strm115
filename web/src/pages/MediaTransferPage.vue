@@ -9,7 +9,7 @@ import HSwitch from '@/components/HSwitch.vue'
 import HEmpty from '@/components/HEmpty.vue'
 import WallBrowser from '@/components/WallBrowser.vue'
 import PlatformWall from '@/components/PlatformWall.vue'
-import CalendarBoard from '@/components/CalendarBoard.vue'
+import MyCalendar from '@/components/MyCalendar.vue'
 import TitlePicker from '@/components/TitlePicker.vue'
 import type { TitleHit } from '@/components/TitlePicker.vue'
 import { api } from '@/api/endpoints'
@@ -21,13 +21,18 @@ import { openDetail } from '@/stores/detail'
 import { pad2 } from '@/utils/format'
 import SubLineSlider from '@/components/SubLineSlider.vue'
 
-/* 标签页现在承载「找资源 / 订阅 / 播出日历 / 链接转存 / 资源搜索 / 订阅设置」。
+/* 标签页现在承载「找资源 / 订阅 / 我的追更 / 链接转存 / 资源搜索 / 订阅设置」。
    日历原本是独立的一页，两边都在看同一批片子却各刷各的（日历里订完回订阅页
    还看不到），合并之后共用一份订阅索引，切换标签不用重新认片。
    初始值认 ?tab=：顶栏搜索、外部链接都靠它落到指定标签。 */
 const route = useRoute()
 const router = useRouter()
-const tab = ref(String(route.query.tab || 'search'))
+/** 老书签 /media-transfer?tab=calendar 落到新的「我的追更」，别停在一个已不存在的标签上 */
+function normalizeTab(v: unknown): string {
+  const s = typeof v === 'string' && v ? v : 'search'
+  return s === 'calendar' ? 'mycalendar' : s
+}
+const tab = ref(normalizeTab(route.query.tab))
 // 「找资源」里的认片输入框：从详情页返回时会用它把上一次的词重新搜一遍。
 const finderRef = ref<{ setQuery: (q: string) => void } | null>(null)
 /** 「查看全部」聚焦到某个平台时，主海报墙让位给带筛选/分页的完整榜单。 */
@@ -37,7 +42,9 @@ const focusProvider = ref<{ code: string; name: string; type: 'movie' | 'series'
 watch(
   () => route.query.tab,
   (v) => {
-    if (typeof v === 'string' && v && v !== tab.value) tab.value = v
+    if (typeof v !== 'string' || !v) return
+    const next = normalizeTab(v)
+    if (next !== tab.value) tab.value = next
   },
 )
 
@@ -138,7 +145,7 @@ const subsLoading = ref(false)
 
 const tabs = computed(() => [
   { value: 'search', label: '找资源' },
-  { value: 'calendar', label: '播出日历' },
+  { value: 'mycalendar', label: '我的追更' },
   { value: 'subs', label: '订阅', count: subs.value.length },
   { value: 'link', label: '链接转存' },
   { value: 'res', label: '资源搜索' },
@@ -278,7 +285,7 @@ function doTransfer() {
 
 /* ---------------- 起播线（水位线与限制线已合并） ---------------- */
 /**
- * 每条剧集订阅都给一根滑杆，和影视详情、播出日历详情用的是同一个组件：
+ * 每条剧集订阅都给一根滑杆，和影视详情用的是同一个组件：
  * 拖到哪一集，就只找它之后的集；往回拖会先问一次。
  *
  * 电影没有集数，起播线对它没意义，这一块只列剧集。
@@ -304,9 +311,9 @@ function onLineSaved(s: SubRow, e: { season: number; episode: number }) {
 /**
  * 切到「订阅」页签就重拉一次。
  *
- * 以前只在 onMounted 拉：在播出日历里订了一部剧、或者把某条取消了，
+ * 以前只在 onMounted 拉：在我的追更里订了一部剧、或者把某条取消了，
  * 切回这里看不到变化 —— 页面没重挂载，列表还是进页面时那一份。
- * 「订阅和播出日历里的订阅没有联动」说的就是这个。
+ * 「订阅和我的追更里的订阅没有联动」说的就是这个。
  */
 watch(tab, (t) => {
   if (t === 'subs') void loadSubs()
@@ -394,19 +401,9 @@ onMounted(() => {
       <PlatformWall v-else @focus="focusProvider = $event" />
     </template>
 
-    <!-- 播出日历：和「找资源」共用同一批片，标签切过来就是这一周 -->
-    <template v-else-if="tab === 'calendar'">
-      <!-- 日历里查片：看到一部想追的，先在这儿按片名认准 TMDB/豆瓣，再去搜资源 -->
-      <div class="panel search-hero">
-        <div class="col" style="gap: 8px">
-          <p class="muted small" style="margin: 0">
-            想在 TMDB 上查某部片（或者把日历里的豆瓣条目认成 TMDB 条目）就先在这儿搜一次：
-            TMDB 与豆瓣同时给候选，选中直接带着片名去搜资源。
-          </p>
-          <TitlePicker compact @pick="onFinderPick" @skip="onFinderSkip" />
-        </div>
-      </div>
-      <CalendarBoard @find="onCalendarFind" />
+    <!-- 我的追更：只列用户已订阅剧集的每一集，按 TMDB 单集播出日排 -->
+    <template v-else-if="tab === 'mycalendar'">
+      <MyCalendar @find="onCalendarFind" />
     </template>
 
     <!-- 订阅 -->
@@ -631,7 +628,7 @@ onMounted(() => {
           <div v-if="seriesSubs.length" class="wm-notes">
             <p class="muted small">
               <strong>起播线</strong>：这一集及之前一律不下载，只找严格晚于它的集。
-              程序提交成功后会自己往前推；这里、影视详情抽屉、播出日历的订阅详情用的是同一根滑杆。
+              程序提交成功后会自己往前推；这里和影视详情抽屉用的是同一根滑杆。
             </p>
             <p class="muted small">
               往回拖会重新搜索、重新提交那些集，花 115 的离线配额，所以会先问一次。已经下过的集不会被删。

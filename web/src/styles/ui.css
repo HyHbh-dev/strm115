@@ -619,7 +619,9 @@ table.table {
   position: fixed;
   top: calc(14px + env(safe-area-inset-top));
   left: 50%;
-  translate: -50% 0;
+  /* 用 transform 居中：toast-in 的 transform 动画作用在子元素 .toast 上，
+     不会覆盖这里；比独立 translate 属性兼容性更好，也避开两者叠加的歧义。 */
+  transform: translateX(-50%);
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
@@ -1006,5 +1008,33 @@ table.table {
   .input,
   .select-native {
     font-size: 16px; /* iOS 上小于 16px 会触发聚焦缩放 */
+  }
+
+  /* 面板头：标题与操作区分行；操作区内部也换行，别把 5 组控件挤成一串。
+     HPanel 的 actions 容器带 inline flex:none，stylesheet 只能靠 !important 覆盖。 */
+  .panel-head {
+    flex-wrap: wrap;
+  }
+  .panel-head > .row {
+    flex: 1 1 100% !important;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  /* Toast 让开固定顶栏；宽度吃满视口，居中仍由 left:50% + transform 负责 */
+  .toaster {
+    top: calc(62px + env(safe-area-inset-top));
+    width: calc(100vw - 24px);
+  }
+
+  /* 版本更新横幅：抬到移动端底部导航之上，并避让安全区。
+     main.ts 里 bottom/margin-left 用 var() 引用这两个变量，
+     由这里在窄屏覆盖，inline 样式无需 !important 也能响应式生效。 */
+  #app-ver-bar {
+    --app-ver-bar-bottom: calc(74px + env(safe-area-inset-bottom));
+  }
+  #app-ver-bar > button {
+    --app-ver-btn-ml: 0;
+    width: 100%;
   }
 }

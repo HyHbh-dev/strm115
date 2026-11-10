@@ -449,6 +449,21 @@ export const api = {
     run: (id: number) => http.post(`/subscriptions/${id}/run`, {}, { timeout: 200_000 }),
     /** ✅ GET /api/subscriptions/seasons?tmdb_id= 季清单 */
     seasons: (tmdbId: number) => http.get('/subscriptions/seasons', { tmdb_id: tmdbId }),
+    /**
+     * ✅ GET /api/subscriptions/episodes?tmdb_id=&season=
+     * 「从哪一集开始订阅」弹窗用：不传 season 只回季集合，传了才拉该季逐集（含 air_date）。
+     */
+    episodes: (tmdbId: number, season?: number) =>
+      http.get('/subscriptions/episodes', { tmdb_id: tmdbId, season: season || undefined }, { timeout: 30_000 }),
+    /**
+     * ✅ GET /api/subscriptions/calendar?start=&days=
+     * 用户专有追更日历：只含已订阅剧集的单集播出日 + 状态，不是全局在播剧单。
+     */
+    calendar: (start?: string, days?: number) =>
+      http.get('/subscriptions/calendar', { start, days }, { timeout: 30_000 }),
+    /** ✅ POST /api/subscriptions/{id}/calendar/refresh 重新拉 TMDB 集数集合 */
+    refreshCalendar: (id: number) =>
+      http.post(`/subscriptions/${id}/calendar/refresh`, {}, { timeout: 60_000 }),
     /** ✅ GET /api/subscriptions/config */
     config: () => http.get('/subscriptions/config'),
     /** ✅ PUT /api/subscriptions/config 只改检查周期（15 分钟 ~ 7 天） */

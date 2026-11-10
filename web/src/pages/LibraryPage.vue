@@ -64,7 +64,7 @@ watch(
       <HTabs v-model="tab" :items="TABS.map((t) => ({ ...t }))" />
       <!-- 海报墙只展示已入库的片；新建媒体库（115 / 夸克TV）在「账号与媒体库」里，
            这里给个直达入口，免得在影视库页找不到扫描选项。 -->
-      <button class="btn btn-sm btn-tertiary" @click="goNewLibrary">
+      <button class="btn btn-sm btn-tertiary new-lib-btn" @click="goNewLibrary">
         <AppIcon name="plus" :size="14" />新建媒体库（115 / 夸克TV）
       </button>
     </div>
@@ -75,3 +75,13 @@ watch(
     <ScrapeConsole v-else @go-wall="tab = 'wall'" />
   </div>
 </template>
+
+<style scoped>
+/* 窄屏：顶部行已有 wrap，按钮文字允许折行，别把「新建媒体库」挤成一团 */
+@media (max-width: 900px) {
+  .new-lib-btn {
+    white-space: normal;
+    text-align: left;
+  }
+}
+</style>

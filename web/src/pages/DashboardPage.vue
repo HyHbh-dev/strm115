@@ -63,18 +63,9 @@ interface AccountQuota {
   ok: boolean
   note?: string
 }
+/** 只用到网盘容量（accounts）：系统资源卡片已移除，其余字段仍由后端返回，前端不再声明。 */
 interface SystemStatus {
-  cpu_percent: number
-  mem_used: number
-  mem_total: number
-  disk_total: number
-  disk_free: number
-  process_mem: number
-  uptime_secs: number
-  indexed_bytes: number
   accounts: AccountQuota[]
-  available: boolean
-  at: string
 }
 interface Run {
   id: number
@@ -186,24 +177,18 @@ function load(silent = false): Promise<void> {
 /* ---------------- 系统资源 / 网盘容量 ----------------
  * 单独一条请求：要问 115 / 夸克，慢的时候不能拖住概览首屏。 */
 const sys = ref<SystemStatus | null>(null)
-const sysLoading = ref(false)
-const sysErr = ref('')
 
 let sysInFlight: Promise<void> | null = null
 
 function loadSys(): Promise<void> {
-  // 系统状态要问 115 / 夸克容量，隧道上可能好几秒。30 秒定时器和手动刷新
+  // 系统状态要问 115 / 夸克容量，隧道上可能好几秒。30 秒定时器
   // 撞车时别叠请求，否则整个页面的交互都会被挂起的连接拖慢。
   if (sysInFlight) return sysInFlight
-  sysLoading.value = true
   const task = (async () => {
     try {
       sys.value = (await api.system.status()) as SystemStatus
-      sysErr.value = ''
-    } catch (e: any) {
-      sysErr.value = e?.message || '读取系统状态失败'
-    } finally {
-      sysLoading.value = false
+    } catch {
+      // 读不到容量就保留上一次结果，卡片停在「正在读取…」或旧值，30 秒后重试
     }
   })()
   sysInFlight = task
@@ -216,13 +201,6 @@ function pct(used: number, total: number): number {
 }
 function tone(p: number): string {
   return p >= 90 ? 'danger' : p >= 75 ? 'warning' : 'ok'
-}
-function uptimeText(sec: number): string {
-  if (!sec) return '—'
-  const d = Math.floor(sec / 86400)
-  const h = Math.floor((sec % 86400) / 3600)
-  const m = Math.floor((sec % 3600) / 60)
-  return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m} 分` : `${m} 分钟`
 }
 function panLabel(kind: string): string {
   return kind === 'quarktv' ? '夸克TV' : kind === '115' ? '115' : kind
@@ -499,60 +477,8 @@ const greeting = computed(() => {
       </div>
     </div>
 
-    <!-- 系统资源 + 网盘容量：独立接口，谁慢都不拖累上面的概览 -->
-    <div class="grid-2 sys-grid">
-      <HPanel title="系统资源" desc="CPU / 内存 / 磁盘实时用量，30 秒缓存">
-        <template #actions>
-          <button class="btn btn-sm btn-ghost" :disabled="sysLoading" title="重新采集" @click="loadSys">
-            <AppIcon name="refresh" :size="14" :class="{ spin: sysLoading }" />
-          </button>
-        </template>
-        <div v-if="sysErr" class="small text-danger">{{ sysErr }}</div>
-        <div v-else-if="!sys" class="muted small">正在读取系统状态…</div>
-        <div v-else class="sys-list">
-          <div class="sys-row">
-            <div class="row-between small">
-              <span>CPU</span><b class="mono">{{ sys.cpu_percent.toFixed(1) }}%</b>
-            </div>
-            <div class="sys-track"><i :class="tone(sys.cpu_percent)" :style="{ width: sys.cpu_percent + '%' }" /></div>
-          </div>
-          <div class="sys-row">
-            <div class="row-between small">
-              <span>内存</span>
-              <b class="mono">
-                {{ fmtBytes(sys.mem_used) }} / {{ fmtBytes(sys.mem_total) }}
-                <template v-if="sys.mem_total"> · {{ pct(sys.mem_used, sys.mem_total) }}%</template>
-              </b>
-            </div>
-            <div class="sys-track">
-              <i :class="tone(pct(sys.mem_used, sys.mem_total))" :style="{ width: pct(sys.mem_used, sys.mem_total) + '%' }" />
-            </div>
-          </div>
-          <div class="sys-row">
-            <div class="row-between small">
-              <span>媒体盘</span>
-              <b class="mono">
-                <template v-if="sys.disk_total">
-                  {{ fmtBytes(sys.disk_total - sys.disk_free) }} / {{ fmtBytes(sys.disk_total) }} ·
-                  剩 {{ fmtBytes(sys.disk_free) }}
-                </template>
-                <template v-else>—（Windows 本地直跑不提供）</template>
-              </b>
-            </div>
-            <div v-if="sys.disk_total" class="sys-track">
-              <i
-                :class="tone(pct(sys.disk_total - sys.disk_free, sys.disk_total))"
-                :style="{ width: pct(sys.disk_total - sys.disk_free, sys.disk_total) + '%' }"
-              />
-            </div>
-          </div>
-          <p class="muted small" style="margin: 2px 0 0">
-            进程内存 {{ fmtBytes(sys.process_mem) }} · 运行 {{ uptimeText(sys.uptime_secs) }}
-            <template v-if="sys.indexed_bytes"> · 台账已索引 {{ fmtBytes(sys.indexed_bytes) }}</template>
-          </p>
-        </div>
-      </HPanel>
-
+    <!-- 网盘容量：独立接口，慢的时候不拖累上面的概览 -->
+    <div>
       <HPanel title="网盘容量" desc="115 走 space_info，夸克走网页 /member（需配 Cookie）">
         <div v-if="!sys" class="muted small">正在读取…</div>
         <HEmpty v-else-if="!sys.accounts.length" title="还没有网盘账号" desc="去「账号」页登录 115 或夸克TV" icon="accounts" />
@@ -838,9 +764,6 @@ const greeting = computed(() => {
 }
 .warn {
   color: var(--warning);
-}
-.sys-grid {
-  align-items: start;
 }
 .sys-list {
   display: flex;

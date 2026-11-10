@@ -621,6 +621,7 @@ onMounted(async () => {
 .toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--separator);
@@ -653,6 +654,7 @@ tr.is-picked {
 .batch {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 16px;
@@ -690,12 +692,34 @@ tr.is-picked {
   margin-top: 4px;
   line-height: 1.65;
 }
-@media (max-width: 860px) {
+/* 断点与 ui.css 的表格保护统一到 900px，别留 860–900 的裸奔区间。 */
+@media (max-width: 900px) {
   .files {
     grid-template-columns: minmax(0, 1fr);
   }
   .tree-panel {
     position: static;
+  }
+  /* 批量条换行后左对齐；勾选标签允许折行，不再和 input / 错误文字叠在一起 */
+  .batch {
+    align-items: flex-start;
+  }
+  .checkline {
+    white-space: normal;
+  }
+  /* 名称列：长文件名单行省略，别把整行撑到换行重叠；
+     配合 table-wrap 的横向滚动，表格仍能左右滑看全 */
+  .table td:nth-child(2) {
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .table-wrap {
+    overflow-x: auto;
+  }
+  .table {
+    min-width: 560px;
   }
 }
 </style>

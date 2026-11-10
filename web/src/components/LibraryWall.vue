@@ -1446,6 +1446,22 @@ onMounted(async () => {
 .scan-row:last-child {
   border-bottom: 0;
 }
+/* 窄屏：筛选控件不再各占固定宽度，改成按行铺满；海报列更窄，多挤一列 */
+@media (max-width: 900px) {
+  /* 这些控件在模板里带了 inline min-width，stylesheet 需要 !important 才能压过去 */
+  .filter-row > .select-native,
+  .filter-row > .segmented,
+  .filter-row > .search {
+    flex: 1 1 100% !important;
+    min-width: 0 !important;
+  }
+  .wall-grid {
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  }
+  .kv-grid {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 720px) {
   .kv-grid {
     grid-template-columns: 1fr;

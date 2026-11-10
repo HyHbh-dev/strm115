@@ -50,7 +50,7 @@ func TestWallProvidersEndpoint(t *testing.T) {
 	for _, p := range out.ProviderOptions {
 		seen[p.Code] = true
 	}
-	for _, code := range []string{"nfx", "dnp", "tx", "iqy"} {
+	for _, code := range []string{"nfx", "amp", "dnp", "atp"} {
 		if !seen[code] {
 			t.Errorf("缺平台 %s", code)
 		}
@@ -61,11 +61,11 @@ func TestWallProvidersEndpoint(t *testing.T) {
 func TestWallCacheKeyDistinct(t *testing.T) {
 	base := wallCacheKey(tmdb.KindMovie, []string{"nfx"}, "action", "popular", 1, "US", "", 30)
 	cases := map[string]string{
-		"换平台": wallCacheKey(tmdb.KindMovie, []string{"iqy"}, "action", "popular", 1, "US", "", 30),
+		"换平台": wallCacheKey(tmdb.KindMovie, []string{"atp"}, "action", "popular", 1, "US", "", 30),
 		"换类型": wallCacheKey(tmdb.KindTV, []string{"nfx"}, "action", "popular", 1, "US", "", 30),
 		"换页码": wallCacheKey(tmdb.KindMovie, []string{"nfx"}, "action", "popular", 2, "US", "", 30),
 		"换地区": wallCacheKey(tmdb.KindMovie, []string{"nfx"}, "action", "popular", 1, "HK", "", 30),
-		"换兜底": wallCacheKey(tmdb.KindMovie, []string{"yku"}, "action", "popular", 1, "US", "CN", 30),
+		"换兜底": wallCacheKey(tmdb.KindMovie, []string{"hlu"}, "action", "popular", 1, "US", "CN", 30),
 	}
 	for name, key := range cases {
 		if key == base {
@@ -117,16 +117,20 @@ func TestWallCacheExpired(t *testing.T) {
 	}
 }
 
-// 国内平台分两类：TMDB 有 provider ID 的真查，没有的用国产内容兜底并给出说明。
-func TestWallCNProviders(t *testing.T) {
-	if tmdbProviderID("tx") != 623 || tmdbProviderID("iqy") != 581 || tmdbProviderID("wetv") != 509 {
-		t.Fatal("国内真实 provider ID 变了，TMDB 侧要同步核对")
+// 国内平台墙已下线：白名单里不该再有 cn 平台，海外的仍要认得。
+func TestWallNoCNProviders(t *testing.T) {
+	for _, code := range []string{"tx", "iqy", "wetv", "yku", "mgtv", "bili", "migu"} {
+		if knownProvider(code) {
+			t.Errorf("国内平台 %s 不该还在白名单里", code)
+		}
 	}
-	p := providerByCode("yku")
-	if p == nil || p.TMDB != 0 || p.Group != "cn" || p.Note == "" {
-		t.Fatalf("兜底平台必须标明无片单，拿到 %+v", p)
+	if tmdbProviderID("nfx") != 8 || tmdbProviderID("atp") != 350 {
+		t.Fatal("海外平台 provider ID 变了，TMDB 侧要同步核对")
 	}
-	if !knownProvider("mgtv") || knownProvider("not-a-provider") {
+	if p := providerByCode("nfx"); p == nil || p.Group != "overseas" {
+		t.Fatalf("海外平台查不到或分组不对，拿到 %+v", p)
+	}
+	if knownProvider("not-a-provider") {
 		t.Fatal("平台白名单判定不对")
 	}
 }

@@ -66,15 +66,9 @@ interface ProviderOption {
   code: string
   name: string
   group?: string
-  note?: string
 }
 const providerOptions = ref<ProviderOption[]>([])
 const overseasProviders = computed(() => providerOptions.value.filter((p) => p.group !== 'cn'))
-const cnProviders = computed(() => providerOptions.value.filter((p) => p.group === 'cn'))
-/** 选中的国内平台若是「按国产内容兜底」，把这句话摆在筛选条上，别让人误以为是平台真实片单 */
-const activeProviderNote = computed(() =>
-  providerOptions.value.find((p) => p.code === provider.value)?.note || '',
-)
 const wallCached = ref(false)
 const genreOptions = ref<[string, string][]>([])
 
@@ -316,34 +310,18 @@ onMounted(() => {
           <button :class="{ 'is-active': type === 'series' }" @click="switchType('series')">剧集</button>
         </div>
 
-        <div class="col" style="gap: 6px">
-          <div class="row wrap" style="gap: 6px">
-            <span class="muted small wall-group">海外</span>
-            <button class="chip" :class="{ 'is-active': !provider }" @click="pickProvider('')">全部平台</button>
-            <button
-              v-for="p in overseasProviders"
-              :key="p.code"
-              class="chip"
-              :class="{ 'is-active': provider === p.code }"
-              @click="pickProvider(p.code)"
-            >
-              {{ p.name }}
-            </button>
-          </div>
-          <div class="row wrap" style="gap: 6px">
-            <span class="muted small wall-group">国内</span>
-            <button
-              v-for="p in cnProviders"
-              :key="p.code"
-              class="chip"
-              :class="{ 'is-active': provider === p.code }"
-              :title="p.note || p.name"
-              @click="pickProvider(p.code)"
-            >
-              {{ p.name }}
-            </button>
-            <span v-if="activeProviderNote" class="muted small">{{ activeProviderNote }}</span>
-          </div>
+        <div class="row wrap" style="gap: 6px">
+          <span class="muted small wall-group">海外</span>
+          <button class="chip" :class="{ 'is-active': !provider }" @click="pickProvider('')">全部平台</button>
+          <button
+            v-for="p in overseasProviders"
+            :key="p.code"
+            class="chip"
+            :class="{ 'is-active': provider === p.code }"
+            @click="pickProvider(p.code)"
+          >
+            {{ p.name }}
+          </button>
         </div>
 
         <div class="grow" />
@@ -619,7 +597,7 @@ onMounted(() => {
   gap: 10px;
   padding: 12px 16px;
 }
-/* 平台分两组，组名固定宽度，chip 换行时仍对齐 */
+/* 组名固定宽度，chip 换行时仍对齐 */
 .wall-group {
   width: 30px;
   flex: none;

@@ -252,6 +252,30 @@ func (s *Store) migrate() error {
 		)`,
 		// 轮询器每轮只查「到期且没暂停」的行，这个索引就是给那条 SQL 用的。
 		`CREATE INDEX IF NOT EXISTS idx_sub_due ON subscriptions(state, next_check_at)`,
+		// 订阅专有播放日历：一条订阅的每一集一行，air_date 来自 TMDB 单集数据。
+		//
+		// 和「全局按周的在播剧单」不是一回事：这里只记用户真正订阅的剧，
+		// 而且每集自带「搜到没 / 下次什么时候再搜」，轮询器直接按它驱动。
+		// 没有这张表之前，订阅只能靠 TMDB 的 Latest() 猜「出到第几集」，
+		// 全局日历的 meta_cache 又是按周共享的，装不下每订阅的进度。
+		`CREATE TABLE IF NOT EXISTS subscription_episodes (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			subscription_id  INTEGER NOT NULL,
+			season           INTEGER NOT NULL,
+			episode          INTEGER NOT NULL,
+			air_date         TEXT NOT NULL DEFAULT '',
+			name             TEXT NOT NULL DEFAULT '',
+			status           TEXT NOT NULL DEFAULT 'pending',
+			try_count        INTEGER NOT NULL DEFAULT 0,
+			next_try_at      TEXT NOT NULL DEFAULT '',
+			found_at         TEXT NOT NULL DEFAULT '',
+			last_result      TEXT NOT NULL DEFAULT '',
+			created_at       TEXT NOT NULL,
+			updated_at       TEXT NOT NULL,
+			UNIQUE(subscription_id, season, episode)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subep_due ON subscription_episodes(status, next_try_at, air_date)`,
+		`CREATE INDEX IF NOT EXISTS idx_subep_sub ON subscription_episodes(subscription_id, season, episode)`,
 		// api_calls 是「今天调了 115 多少次」的落库账。
 		//
 		// 为什么不在内存里数完就算：进程重启（换镜像、崩了）之后用户看到的数字

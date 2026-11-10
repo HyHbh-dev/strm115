@@ -29,8 +29,6 @@ interface WallItem {
 interface Provider {
   code: string
   name: string
-  group?: string
-  note?: string
 }
 interface RowState {
   items: WallItem[]
@@ -52,9 +50,6 @@ const rows = ref<Record<string, RowState>>({})
 const providersLoading = ref(false)
 const providersErr = ref('')
 const broken = ref<Record<string, boolean>>({})
-
-const overseas = computed(() => providers.value.filter((p) => p.group !== 'cn'))
-const cn = computed(() => providers.value.filter((p) => p.group === 'cn'))
 
 function blankRow(): RowState {
   return { items: [], loading: false, loaded: false, err: '' }
@@ -214,78 +209,70 @@ onBeforeUnmount(() => {
     <div v-if="providersLoading" class="muted small pad">正在读取平台清单…</div>
     <div v-else-if="providersErr" class="err small pad">{{ providersErr }}</div>
 
-    <template v-for="group in [
-      { label: '海外平台', list: overseas },
-      { label: '国内平台', list: cn },
-    ]" :key="group.label">
-      <div v-if="group.list.length" class="pw-group">
-        <h3 class="pw-group-title">{{ group.label }}</h3>
-
-        <section
-          v-for="p in group.list"
-          :key="p.code"
-          :ref="(el) => setRowRef(p.code, el)"
-          :data-code="p.code"
-          class="pw-row panel"
-        >
-          <header class="row-between pw-head">
-            <div class="row" style="gap: 8px; min-width: 0">
-              <h4 class="pw-title">{{ p.name }} <span class="muted">- {{ typeLabel }}</span></h4>
-              <span v-if="p.note" class="muted small truncate" :title="p.note">{{ p.note }}</span>
-            </div>
-            <div class="row" style="gap: 4px; flex: none">
-              <button class="btn btn-icon btn-sm" title="向左" @click="scrollRow(p.code, -1)">
-                <AppIcon name="chevronLeft" :size="14" />
-              </button>
-              <button class="btn btn-icon btn-sm" title="向右" @click="scrollRow(p.code, 1)">
-                <AppIcon name="chevronRight" :size="14" />
-              </button>
-              <button class="btn btn-sm btn-ghost" @click="emit('focus', { code: p.code, name: p.name, type })">
-                查看全部<AppIcon name="chevronRight" :size="13" />
-              </button>
-            </div>
-          </header>
-
-          <div class="pw-track" :data-code="p.code">
-            <button
-              v-for="it in rows[p.code]?.items || []"
-              :key="artKey(it)"
-              class="pw-card"
-              :title="it.name"
-              @click="openTitle(it)"
-            >
-              <div class="pw-art">
-                <img
-                  v-if="it.poster && !broken[artKey(it)]"
-                  :src="it.poster"
-                  alt=""
-                  loading="lazy"
-                  decoding="async"
-                  @error="markBro(artKey(it))"
-                />
-                <div v-else class="pw-ph">{{ it.name }}</div>
-                <span v-if="it.rating" class="pw-rate">{{ it.rating }}</span>
-                <span v-if="it.in_library" class="pw-inlib">已入库</span>
-              </div>
-              <span class="pw-name">{{ it.name }}</span>
-              <span class="pw-sub">{{ it.year || '—' }}</span>
+    <div class="pw-group">
+      <section
+        v-for="p in providers"
+        :key="p.code"
+        :ref="(el) => setRowRef(p.code, el)"
+        :data-code="p.code"
+        class="pw-row panel"
+      >
+        <header class="row-between pw-head">
+          <div class="row" style="gap: 8px; min-width: 0">
+            <h4 class="pw-title">{{ p.name }} <span class="muted">- {{ typeLabel }}</span></h4>
+          </div>
+          <div class="row" style="gap: 4px; flex: none">
+            <button class="btn btn-icon btn-sm" title="向左" @click="scrollRow(p.code, -1)">
+              <AppIcon name="chevronLeft" :size="14" />
             </button>
+            <button class="btn btn-icon btn-sm" title="向右" @click="scrollRow(p.code, 1)">
+              <AppIcon name="chevronRight" :size="14" />
+            </button>
+            <button class="btn btn-sm btn-ghost" @click="emit('focus', { code: p.code, name: p.name, type })">
+              查看全部<AppIcon name="chevronRight" :size="13" />
+            </button>
+          </div>
+        </header>
 
-            <div v-if="rows[p.code]?.loading && !(rows[p.code]?.items || []).length" class="pw-track-skeleton">
-              <div v-for="i in 8" :key="i" class="pw-card">
-                <div class="skeleton pw-art" />
-                <div class="skeleton" style="height: 11px; width: 80%" />
-              </div>
+        <div class="pw-track" :data-code="p.code">
+          <button
+            v-for="it in rows[p.code]?.items || []"
+            :key="artKey(it)"
+            class="pw-card"
+            :title="it.name"
+            @click="openTitle(it)"
+          >
+            <div class="pw-art">
+              <img
+                v-if="it.poster && !broken[artKey(it)]"
+                :src="it.poster"
+                alt=""
+                loading="lazy"
+                decoding="async"
+                @error="markBro(artKey(it))"
+              />
+              <div v-else class="pw-ph">{{ it.name }}</div>
+              <span v-if="it.rating" class="pw-rate">{{ it.rating }}</span>
+              <span v-if="it.in_library" class="pw-inlib">已入库</span>
+            </div>
+            <span class="pw-name">{{ it.name }}</span>
+            <span class="pw-sub">{{ it.year || '—' }}</span>
+          </button>
+
+          <div v-if="rows[p.code]?.loading && !(rows[p.code]?.items || []).length" class="pw-track-skeleton">
+            <div v-for="i in 8" :key="i" class="pw-card">
+              <div class="skeleton pw-art" />
+              <div class="skeleton" style="height: 11px; width: 80%" />
             </div>
           </div>
+        </div>
 
-          <p v-if="rows[p.code]?.err" class="err small pw-msg">{{ rows[p.code]?.err }}</p>
-          <p v-else-if="rows[p.code]?.loaded && !(rows[p.code]?.items || []).length" class="muted small pw-msg">
-            这个平台暂时没有{{ typeLabel }}片单
-          </p>
-        </section>
-      </div>
-    </template>
+        <p v-if="rows[p.code]?.err" class="err small pw-msg">{{ rows[p.code]?.err }}</p>
+        <p v-else-if="rows[p.code]?.loaded && !(rows[p.code]?.items || []).length" class="muted small pw-msg">
+          这个平台暂时没有{{ typeLabel }}片单
+        </p>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -302,13 +289,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-.pw-group-title {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  margin: 0;
 }
 .pw-row {
   padding: 12px 14px 14px;

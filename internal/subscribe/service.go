@@ -44,7 +44,11 @@ type Deps struct {
 	Search func(ctx context.Context, q, kind, en string, limit int) (*resource.Result, error)
 	Submit func(ctx context.Context, accountID int64, uris []string, saveCID, label string) ([]string, error)
 	// Interval 读用户设的检查周期。返回 0 或负数时用 6 小时兜底。
+	// 只作用于电影；剧集订阅改由专有日历的播出日驱动。
 	Interval func(context.Context) time.Duration
+	// CalendarRefresh 重新从 TMDB 拉一部剧的集数集合并写回专有日历，返回集数。
+	// 由 httpapi 注入，避免 subscribe 反向依赖 Server。为 nil 时退回旧逻辑。
+	CalendarRefresh func(ctx context.Context, sub store.Subscription) (int, error)
 }
 
 // Service 是订阅轮询器。
@@ -99,6 +103,10 @@ func (s *Service) loop(ctx context.Context) {
 // tick 扫一轮到期的订阅。串行处理：115 的离线上传对并发很敏感，
 // 而且串行下日志顺序就是时间顺序，排查问题时不用对时间戳。
 func (s *Service) tick(ctx context.Context) {
+	// 专有日历驱动：按每集 air_date 搜资源。放在前面，因为刚订阅时新集
+	// 立刻到期，先跑完这一轮再去刷新元数据，用户能更快看到结果。
+	s.tickCalendar(ctx)
+
 	due, err := s.st.DueSubscriptions(ctx, time.Now(), 10)
 	if err != nil {
 		s.log.Warn("读取到期订阅失败", "err", err)
@@ -186,6 +194,16 @@ func (s *Service) check(ctx context.Context, sub store.Subscription) (string, er
 	if sub.MediaType == "movie" {
 		return s.checkMovie(ctx, sub, interval)
 	}
+	// 剧集一律走专有日历：这一轮只刷新 TMDB 集数集合（新季 / 新增集），
+	// 资源搜索由 tickCalendar 按每集播出日驱动。两条路径不能同时跑，
+	// 否则同一集会被提交两次。
+	//
+	// 老订阅（升级前建的，订阅表里没有日历行）也走这里：materializeCalendar
+	// 会顺手把它的集数集合补齐，等于自动迁移到播出日驱动，不需要人工干预。
+	if s.dep.CalendarRefresh != nil {
+		return s.refreshCalendar(ctx, sub)
+	}
+	// 没注入刷新能力时（单测 / 精简部署）才回退到旧的水位线轮询。
 	return s.checkTV(ctx, sub, client, interval)
 }
 

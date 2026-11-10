@@ -38,7 +38,7 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
         name: 'media-transfer',
         path: '/media-transfer',
         label: '发现与订阅',
-        desc: '找片 · 播出日历 · 订阅追更 · 链接转存',
+        desc: '找片 · 我的追更 · 订阅 · 链接转存',
         icon: 'download',
       },
       {

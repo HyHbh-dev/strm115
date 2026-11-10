@@ -11,8 +11,8 @@ services:
     build:
       context: .
       args:
-        VERSION: ${VERSION:-v0.4.5}
-    image: strm115:${VERSION:-v0.4.5}
+        VERSION: ${VERSION:-v0.5.0}
+    image: strm115:${VERSION:-v0.5.0}
     container_name: strm115
     restart: unless-stopped
 
@@ -104,7 +104,7 @@ services:
   # 跑完就退出，Exited (0) 是**正常状态**，不是崩溃。
   bootstrap:
     profiles: ["auto"]
-    image: strm115:${VERSION:-v0.4.5}
+    image: strm115:${VERSION:-v0.5.0}
     container_name: strm115-bootstrap
     restart: "no"
 

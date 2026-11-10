@@ -205,6 +205,11 @@ func New(d Deps) *Server {
 			return hashes, err
 		},
 		Interval: s.subInterval,
+		// 有专有日历的剧集订阅每 24 小时刷新一次 TMDB 集数集合，
+		// 资源搜索本身由订阅日历的播出日驱动，不走旧的全局轮询。
+		CalendarRefresh: func(ctx context.Context, sub store.Subscription) (int, error) {
+			return s.materializeCalendar(ctx, sub, nil, s.tmdbClient(ctx))
+		},
 	})
 	// 用可取消的 ctx 启动：Close() 要能停掉这个 goroutine，
 	// 否则容器重启 / 测试收尾时它还在后台扫库。
@@ -405,6 +410,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.handleDeleteSub)
 	mux.HandleFunc("POST /api/subscriptions/{id}/run", s.handleRunSub)
 	mux.HandleFunc("GET /api/subscriptions/seasons", s.handleSubSeasons)
+	mux.HandleFunc("GET /api/subscriptions/episodes", s.handleSubEpisodes)
+	mux.HandleFunc("GET /api/subscriptions/calendar", s.handleSubCalendar)
+	mux.HandleFunc("POST /api/subscriptions/{id}/calendar/refresh", s.handleRefreshSubCalendar)
 	mux.HandleFunc("GET /api/subscriptions/config", s.handleGetSubConfig)
 	mux.HandleFunc("PUT /api/subscriptions/config", s.handlePutSubConfig)
 

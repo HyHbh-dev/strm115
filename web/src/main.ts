@@ -25,7 +25,11 @@ function mountUpdateBar(serverVersion: string) {
   const bar = document.createElement('div')
   bar.id = 'app-ver-bar'
   bar.style.cssText = [
-    'position:fixed', 'left:12px', 'right:12px', 'bottom:12px', 'z-index:9999',
+    'position:fixed', 'left:12px', 'right:12px',
+    /* 宽屏 12px；窄屏由 ui.css 给 #app-ver-bar 设 --app-ver-bar-bottom，
+       抬到移动端底部导航之上。用变量而非 !important 覆盖 inline，
+       CSS media query 天然响应式，窗口旋转/缩放也会跟着变。 */
+    'bottom:var(--app-ver-bar-bottom,12px)', 'z-index:9999',
     'display:flex', 'align-items:center', 'gap:10px', 'flex-wrap:wrap',
     'padding:10px 14px', 'border-radius:12px',
     'background:var(--surface,#fff)', 'color:var(--text,#111)',
@@ -36,7 +40,9 @@ function mountUpdateBar(serverVersion: string) {
   const btn = document.createElement('button')
   btn.textContent = '刷新页面'
   btn.style.cssText = [
-    'margin-left:auto', 'padding:6px 12px', 'border-radius:8px', 'cursor:pointer',
+    /* 宽屏靠右；窄屏 ui.css 把 --app-ver-btn-ml 设为 0 且 width:100%，
+       按钮换行后不再漂到最右边。 */
+    'margin-left:var(--app-ver-btn-ml,auto)', 'padding:6px 12px', 'border-radius:8px', 'cursor:pointer',
     'border:1px solid var(--accent,#2563eb)', 'background:transparent',
     'color:var(--accent,#2563eb)', 'font:inherit', 'font-weight:600',
   ].join(';')

@@ -79,8 +79,8 @@ def main() -> None:
     sub("cmd/server/main.go", r'var Version = "v?\d+\.\d+\.\d+-dev"', f'var Version = "{new}-dev"')
     sub("web/src/pages/SettingsPage.vue",
         r"session\.version \|\| 'v?\d+\.\d+\.\d+'", f"session.version || '{new}'")
-    sub("web/src/layout/AppSidebar.vue",
-        r"session\.version \|\| '[^']*'", f"session.version || '{new[1:]}'")
+    # 侧栏显示的是 vite 注入的「前端构建版本」（web/src/build.ts），由
+    # vite.config.ts 构建时读 VERSION 得到，这里没有需要同步的硬编码。
     sub("web/src/layout/AppTopbar.vue",
         r"session\.version \|\| '[^']*'", f"session.version || '{new[1:]}'")
     sub("web/src/pages/LoginPage.vue",

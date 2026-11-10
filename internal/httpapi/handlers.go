@@ -696,7 +696,8 @@ var settingKeys = []string{
 	"server_kind", "server_url", "server_key",
 	// Emby 302 网关：开关 + UA 例外名单。它和播放代理共用一个端口，
 	// 不再有自己的端口；老配置里的 emby_gateway_port 只用于兼容读取。
-	"emby_gateway_on", "emby_gateway_bypass",
+	// emby_gateway_mode 决定 PlaybackInfo 改写后把 Path 指向哪（三档，见 embygw/mode.go）。
+	"emby_gateway_on", "emby_gateway_bypass", "emby_gateway_mode",
 	"server_path_from", "server_path_to",
 	"sync_keep_ext", "sync_delete_stale", "sync_min_size", "sync_dedupe",
 	"imdb_api_key", "tmdb_api_key",

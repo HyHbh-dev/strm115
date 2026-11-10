@@ -5,9 +5,9 @@
 // remux，家宽上行和 Cloudflare 隧道全被这一段中转吃满。
 //
 // 这个网关做两件事：
-//  1. 改写 PlaybackInfo 响应，把 .strm 媒体源的 DirectStreamUrl 统一指向本站的
-//     302 入口（见 playback.go）——客户端发什么路径从此由我们决定，不必再
-//     逐个适配 SenPlayer / Infuse / Emby Web 各自的 stream 写法；
+//  1. 改写 PlaybackInfo 响应，把 .strm 媒体源的播放地址改成不经 Emby 中转的
+//     入口（见 playback.go / mode.go，三档可切换）——客户端发什么路径从此
+//     由我们决定，不必再逐个适配 SenPlayer / Infuse / Emby Web 各自的写法；
 //  2. 认出「客户端要播放某个条目」的请求，问 Emby 这个条目的 .strm 内容，
 //     把客户端 302 到网盘直链。视频字节从此不经过 Emby。
 //
@@ -52,7 +52,10 @@ type Options struct {
 	Upstream string   // 例如 http://127.0.0.1:8096
 	APIKey   string   // 客户端没带 token 时用它查条目（兜底）
 	Bypass   []string // UA 子串，命中则完全不拦（个别播放器不跟 302）
-	Resolve Resolver
+	Resolve  Resolver
+	// Mode 决定 PlaybackInfo 改写后把 Path 指向哪（见 mode.go）。
+	// 空值 = redirect，也就是最兼容的「统一 302 入口」。
+	Mode PlayMode
 	// Play 是同端口上的播放代理。命中 /d/ 或 /healthz 时原样交给它，
 	// 其余的才当成 Emby 请求处理 —— 两个服务现在只开一个端口。
 	Play http.Handler
@@ -116,22 +119,31 @@ func New(opt Options) (*Gateway, error) {
 	origDirector := rp.Director
 	rp.Director = func(r *http.Request) {
 		origDirector(r)
-		// PlaybackInfo 的响应体要改写，压缩过就解不开；只对这个接口关压缩。
-		if rePlaybackInfo.MatchString(r.URL.Path) {
-			r.Header.Set("Accept-Encoding", "identity")
-		}
+	// PlaybackInfo 与条目详情的响应体要读，压缩过就解不开；只对这两个接口关压缩。
+	// 详情页不改内容，只用来提前预热直链（STRMhub 的做法）。
+	if rePlaybackInfo.MatchString(r.URL.Path) || reItemDetail.MatchString(r.URL.Path) {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		opt.Log.Warn("Emby 反代失败", "path", r.URL.Path, "err", err)
 		http.Error(w, "Emby 连不上："+err.Error(), http.StatusBadGateway)
 	}
 	g := &Gateway{opt: opt, proxy: rp, log: opt.Log, warm: map[string]bool{}}
-	// 从源头把播放地址统一到本站 302 入口，不再靠猜客户端发哪种 stream 路径。
-	rp.ModifyResponse = g.rewritePlaybackInfo
+	// 从源头把播放地址统一到不经 Emby 中转的入口；详情页只做预热。
+	rp.ModifyResponse = func(resp *http.Response) error {
+		if err := g.rewritePlaybackInfo(resp); err != nil {
+			return err
+		}
+		return g.prefetchOnItemDetail(resp)
+	}
 	return g, nil
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 把客户端真正访问的协议 / 域名记进 context：ReverseProxy 会把出站请求的
+	// Host 改成上游 Emby，ModifyResponse 里已经读不到原始值了。
+	r = withClientBase(r)
 	// 播放代理优先：同一个端口既要能 302 直链，也要能当 Emby 入口用。
 	if g.opt.Play != nil && isPlayPath(r.URL.Path) {
 		g.opt.Play.ServeHTTP(w, r)
@@ -170,12 +182,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.proxy.ServeHTTP(w, r)
 		return
 	}
-	// Emby 条目里的 Path 是那个 .strm 文件本身，真正的播放地址写在文件里 ——
-	// 所以这里必须把文件读出来。本地真实文件（.mkv 等）读不到就是「不是我们的片子」。
-	pick, ok := g.strmTargetOf(itemPath)
-	if !ok {
-		g.proxy.ServeHTTP(w, r)
-		return
+	// Emby 条目里的 Path 通常是那个 .strm 文件本身，真正的播放地址写在文件里；
+	// 也有版本直接把 .strm 内容（/d/ URL）当远程源返回。两种都要能抽出 pickcode，
+	// 否则 302 会静默退回中转。本地真实文件（.mkv 等）两者都认不出，原样回代理。
+	_, pick, _ := g.sourceDirectURL(itemPath)
+	if pick == "" {
+		var ok bool
+		pick, ok = g.strmTargetOf(itemPath)
+		if !ok {
+			g.proxy.ServeHTTP(w, r)
+			return
+		}
 	}
 	resolveStart := time.Now()
 	target, err := g.opt.Resolve(r.Context(), pick, r.UserAgent())
@@ -251,16 +268,52 @@ func (g *Gateway) prewarm(itemID string, r *http.Request) {
 			g.log.Debug("预热跳过：查不到条目路径", "item", itemID, "err", err)
 			return
 		}
-		pick, ok := g.strmTargetOf(itemPath)
-		if !ok {
-			return
+		// 与取流时同一套解析：Path 可能是 .strm 文件，也可能已经是 /d/ URL。
+		_, pick, _ := g.sourceDirectURL(itemPath)
+		if pick == "" {
+			var ok bool
+			pick, ok = g.strmTargetOf(itemPath)
+			if !ok {
+				return
+			}
 		}
+		g.prewarmPick(pick, ua)
+	}()
+}
+
+// prewarmPick 直接按 pickcode 预热，不必再问一遍 Emby。
+//
+// PlaybackInfo 改写时媒体源的 Path 里已经有 /d/{id}，详情页预取也一样。
+// 过去的 prewarm 一定要先查条目、再读 .strm 文件，遇到「Path 本来就是
+// /d/ URL」的 Emby 版本会整个跳过 —— 冷解析 1~6 秒全落在起播关键路径上。
+// 这里与 /d/ 端点共用同一个 Resolve（同一份直链缓存），命中即返回。
+func (g *Gateway) prewarmPick(pick, ua string) {
+	if pick == "" || g.opt.Resolve == nil {
+		return
+	}
+	key := "pick:" + pick + "|" + ua
+	g.warmMu.Lock()
+	if g.warm[key] {
+		g.warmMu.Unlock()
+		return
+	}
+	g.warm[key] = true
+	g.warmMu.Unlock()
+
+	go func() {
+		defer func() {
+			g.warmMu.Lock()
+			delete(g.warm, key)
+			g.warmMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
 		start := time.Now()
 		if _, err := g.opt.Resolve(ctx, pick, ua); err != nil {
-			g.log.Debug("预热失败", "item", itemID, "pick", pick, "err", err)
+			g.log.Debug("预热失败", "pick", pick, "err", err)
 			return
 		}
-		g.log.Debug("直链已预热", "item", itemID, "pick", pick, "ms", time.Since(start).Milliseconds())
+		g.log.Debug("直链已预热", "pick", pick, "ms", time.Since(start).Milliseconds())
 	}()
 }
 
@@ -322,23 +375,10 @@ func queryTrueFold(q url.Values, key string) bool {
 }
 
 // embyToken 从请求里取客户端的 Emby token，取不到则用设置里的兜底 Key。
+// 解析规则与 requestToken 共用一份：Bearer / ApiKey / 复合头都要认。
 func (g *Gateway) embyToken(r *http.Request) string {
-	for _, v := range []string{
-		r.Header.Get("X-Emby-Token"),
-		r.URL.Query().Get("api_key"),
-		r.Header.Get("X-MediaBrowser-Token"),
-	} {
-		if v != "" {
-			return v
-		}
-	}
-	for _, v := range []string{
-		r.Header.Get("X-Emby-Authorization"),
-		r.Header.Get("Authorization"),
-	} {
-		if m := reAuthToken.FindStringSubmatch(v); len(m) == 2 {
-			return m[1]
-		}
+	if t := requestToken(r); t != "" {
+		return t
 	}
 	return g.opt.APIKey
 }

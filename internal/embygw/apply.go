@@ -30,6 +30,7 @@ func ApplyFromStore(ctx context.Context, src SettingSource, mgr *Manager, resolv
 	}
 	key, _ := src.GetSetting(ctx, "server_key")
 	bypass, _ := src.GetSetting(ctx, "emby_gateway_bypass")
+	mode, _ := src.GetSetting(ctx, "emby_gateway_mode")
 
 	from, _ := src.GetSetting(ctx, "server_path_from")
 	to, _ := src.GetSetting(ctx, "server_path_to")
@@ -38,6 +39,7 @@ func ApplyFromStore(ctx context.Context, src SettingSource, mgr *Manager, resolv
 		Upstream: strings.TrimSpace(up),
 		APIKey:   key,
 		Bypass:   splitList(bypass),
+		Mode:     ParseMode(mode),
 		Resolve:  resolve,
 		MapLocal: invertedPathMap(from, to),
 		Log:      log,

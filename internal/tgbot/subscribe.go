@@ -90,6 +90,7 @@ func (b *Bot) onSubscribeCallback(
 			return true
 		}
 		p.season = 0
+		p.page = 0
 		b.putSubPick(chat, p)
 		if err := a.edit(ctx, chat, p.msgID,
 			renderSubSeasons(p.hit, p.seasons), subSeasonKeyboard(p.seasons)); err != nil {
@@ -111,10 +112,35 @@ func (b *Bot) onSubscribeCallback(
 			return true
 		}
 		p.season = season
+		p.page = 0
 		b.putSubPick(chat, p)
 		if err := a.edit(ctx, chat, p.msgID,
-			renderSubEpisodes(p.hit, season, count), subEpisodeKeyboard(season, count)); err != nil {
+			renderSubEpisodes(p.hit, season, count, 0), subEpisodeKeyboard(season, count, 0)); err != nil {
 			b.log.Debug("选集改写失败", "err", err, "chat", chat)
+		}
+		answer("")
+		return true
+
+	case strings.HasPrefix(d, "sbpg:"):
+		// 翻段：只改当前段号，片子和季都留在状态里，原地改写同一条消息。
+		page, ok := atoiOK(strings.TrimPrefix(d, "sbpg:"))
+		p, live := b.subPickFor(chat)
+		if !live {
+			expired()
+			return true
+		}
+		count := seasonEpisodes(p.seasons, p.season)
+		if !ok || p.season <= 0 || count <= 0 || page < 0 || page >= subEpisodePages(count) {
+			answer("没有这一段")
+			return true
+		}
+		// subPickFor 返回的是拷贝：page/season 都是值字段，必须 putSubPick 存回去。
+		p.page = page
+		b.putSubPick(chat, p)
+		if err := a.edit(ctx, chat, p.msgID,
+			renderSubEpisodes(p.hit, p.season, count, page),
+			subEpisodeKeyboard(p.season, count, page)); err != nil {
+			b.log.Debug("翻段改写失败", "err", err, "chat", chat)
 		}
 		answer("")
 		return true

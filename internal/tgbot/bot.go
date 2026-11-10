@@ -210,6 +210,7 @@ type subPick struct {
 	hit     TitleHit
 	seasons []SubSeason
 	season  int   // 当前正在挑集号的季
+	page    int   // 当前集号段（从 0 起，每 50 集一段）
 	msgID   int64 // 「从哪一集开始」那条消息，选季/选集原地改写它
 	at      time.Time
 }

@@ -56,6 +56,27 @@ func cb(f *fakeTG, data string, msgID int64) *CallbackQuery {
 	}
 }
 
+// flatCallbackData 把键盘里所有回调数据拼成一行，方便断言某个按钮在不在。
+func flatCallbackData(kb InlineKeyboard) string {
+	var b strings.Builder
+	for _, row := range kb {
+		for _, btn := range row {
+			b.WriteString(btn.CallbackData)
+			b.WriteString(" ")
+		}
+	}
+	return b.String()
+}
+
+// subDepsWithSeasons 换掉季集数，好造「一季 79 集」「一季 130 集」这种长清单。
+func subDepsWithSeasons(f *fakeTG, sl *subLog, seasons []SubSeason) Deps {
+	d := subDeps(f, nil, sl)
+	d.SubscribeSeasons = func(_ context.Context, _ int) ([]SubSeason, error) {
+		return seasons, nil
+	}
+	return d
+}
+
 // 没接订阅能力时不该出现一个点了没反应的按钮；接上后每部候选同一行多一个订阅。
 func TestSubscribeButtonOnlyWhenAvailable(t *testing.T) {
 	for _, withSub := range []bool{false, true} {
@@ -247,6 +268,147 @@ func TestSubscribeFromResourceList(t *testing.T) {
 	if len(sl.reqs) != 1 || sl.reqs[0].TMDbID != 101 {
 		t.Fatalf("资源清单的订阅没建起来：%v", sl.reqs)
 	}
+}
+
+// 79 集的季按 50 集分两段：第 0 段 E01–E50、第 1 段 E51–E79，
+// 后面的集不再被截断，E79 能真正点进订阅。
+func TestSubscribeEpisodeSegments79(t *testing.T) {
+	f := &fakeTG{}
+	srv := f.server(t)
+	sl := &subLog{}
+	b := New(subDepsWithSeasons(f, sl, []SubSeason{{Season: 1, Episodes: 79, Name: "第一季"}}))
+	api := f.api(srv)
+
+	b.onMessage(context.Background(), api, chatMsg(1, "沙丘2"))
+	b.onCallback(context.Background(), api, cb(f, "sb:2", f.lastSentID(t)))
+	seasonMsg, _ := f.last("sendMessage")
+	msgID := seasonMsg.msgID
+
+	// 选季 → 第 0 段
+	b.onCallback(context.Background(), api, cb(f, "sbs:1", msgID))
+	page0, ok := f.last("editMessageText")
+	if !ok {
+		t.Fatal("选季应原地改写成集号键盘")
+	}
+	text0, _ := page0.payload["text"].(string)
+	for _, want := range []string{"共 79 集", "第 1/2 段", "E01–E50"} {
+		if !strings.Contains(text0, want) {
+			t.Errorf("第 0 段文案缺少 %q：%s", want, text0)
+		}
+	}
+	if strings.Contains(text0, "只列出") {
+		t.Errorf("不该再出现旧版的截断提示：%s", text0)
+	}
+	flat0 := flatCallbackData(keyboardOf(t, page0))
+	for _, want := range []string{"sbe:1:1 ", "sbe:1:50 ", "sbpg:1 ", "sbback"} {
+		if !strings.Contains(flat0, want) {
+			t.Errorf("第 0 段键盘缺少 %q：%s", want, flat0)
+		}
+	}
+	if strings.Contains(flat0, "sbe:1:51 ") {
+		t.Errorf("第 0 段不该渲染 E51：%s", flat0)
+	}
+
+	// sbpg 翻到第 2 段（page=1）
+	b.onCallback(context.Background(), api, cb(f, "sbpg:1", msgID))
+	page1, ok := f.last("editMessageText")
+	if !ok {
+		t.Fatal("翻段应原地改写同一条消息")
+	}
+	text1, _ := page1.payload["text"].(string)
+	for _, want := range []string{"第 2/2 段", "E51–E79"} {
+		if !strings.Contains(text1, want) {
+			t.Errorf("第 1 段文案缺少 %q：%s", want, text1)
+		}
+	}
+	flat1 := flatCallbackData(keyboardOf(t, page1))
+	for _, want := range []string{"sbe:1:51 ", "sbe:1:79 ", "sbpg:0 "} {
+		if !strings.Contains(flat1, want) {
+			t.Errorf("第 1 段键盘缺少 %q：%s", want, flat1)
+		}
+	}
+	if strings.Contains(flat1, "sbe:1:50 ") || strings.Contains(flat1, "sbpg:2 ") {
+		t.Errorf("第 1 段不该有 E50 或下一段：%s", flat1)
+	}
+
+	// E79 能选：起播线原样进订阅请求（不再被 60 集上限截掉）
+	b.onCallback(context.Background(), api, cb(f, "sbe:1:79", msgID))
+	if len(sl.reqs) != 1 {
+		t.Fatalf("选完 E79 应建 1 次订阅，实际 %v", sl.reqs)
+	}
+	if sl.reqs[0].WatermarkSeason != 1 || sl.reqs[0].WatermarkEpisode != 79 {
+		t.Errorf("E79 起播线没传对：%+v", sl.reqs[0])
+	}
+}
+
+// 分段边界：130 集能翻到第三段，越界翻段被挡住；50 集以内保持原键盘形状。
+func TestSubscribeEpisodeSegmentEdges(t *testing.T) {
+	t.Run("130 集三段与越界", func(t *testing.T) {
+		f := &fakeTG{}
+		srv := f.server(t)
+		sl := &subLog{}
+		b := New(subDepsWithSeasons(f, sl, []SubSeason{{Season: 1, Episodes: 130}}))
+		api := f.api(srv)
+
+		b.onMessage(context.Background(), api, chatMsg(1, "沙丘2"))
+		b.onCallback(context.Background(), api, cb(f, "sb:2", f.lastSentID(t)))
+		msgID := f.lastSentID(t)
+		b.onCallback(context.Background(), api, cb(f, "sbs:1", msgID))
+
+		// 直接翻到第三段（page=2）：E101–E130，还留着回第二段的按钮
+		b.onCallback(context.Background(), api, cb(f, "sbpg:2", msgID))
+		last, _ := f.last("editMessageText")
+		flat := flatCallbackData(keyboardOf(t, last))
+		for _, want := range []string{"sbe:1:101 ", "sbe:1:130 ", "sbpg:1 "} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("第三段键盘缺少 %q：%s", want, flat)
+			}
+		}
+		if strings.Contains(flat, "sbpg:3 ") {
+			t.Errorf("最后一段不该还有下一段：%s", flat)
+		}
+
+		// 越界翻段：只回一句提示，不改写消息也不建订阅
+		editsBefore := f.count("editMessageText")
+		b.onCallback(context.Background(), api, cb(f, "sbpg:9", msgID))
+		if f.count("editMessageText") != editsBefore {
+			t.Errorf("越界翻段不该改写消息")
+		}
+		ans, ok := f.last("answerCallbackQuery")
+		if !ok {
+			t.Fatal("越界也要 answer，否则按钮一直转圈")
+		}
+		if txt, _ := ans.payload["text"].(string); !strings.Contains(txt, "没有这一段") {
+			t.Errorf("越界应提示「没有这一段」：%v", ans.payload)
+		}
+		if len(sl.reqs) != 0 {
+			t.Errorf("翻段不该建订阅：%v", sl.reqs)
+		}
+	})
+
+	t.Run("50 集以内不显示翻段行", func(t *testing.T) {
+		f := &fakeTG{}
+		srv := f.server(t)
+		sl := &subLog{}
+		b := New(subDepsWithSeasons(f, sl, []SubSeason{{Season: 1, Episodes: 50}}))
+		api := f.api(srv)
+
+		b.onMessage(context.Background(), api, chatMsg(1, "沙丘2"))
+		b.onCallback(context.Background(), api, cb(f, "sb:2", f.lastSentID(t)))
+		msgID := f.lastSentID(t)
+		b.onCallback(context.Background(), api, cb(f, "sbs:1", msgID))
+
+		edit, _ := f.last("editMessageText")
+		flat := flatCallbackData(keyboardOf(t, edit))
+		if strings.Contains(flat, "sbpg:") {
+			t.Errorf("只有一段时不该出现翻段按钮：%s", flat)
+		}
+		for _, want := range []string{"sbe:1:50 ", "sbback", "sbx"} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("短季要保持原来的键盘形状，缺 %q：%s", want, flat)
+			}
+		}
+	})
 }
 
 // 重复订阅和失败都要有像样的回执，不能只留一个转圈的按钮。

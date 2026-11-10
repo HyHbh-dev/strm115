@@ -36,6 +36,25 @@ http://NAS:6086/d/abc123def.mkv?/流浪地球 (2019).mkv
 - `?/文件名` 是装饰，让 Emby 不用额外发请求就知道是什么文件。
 - 本机收到 `/d/abc123def.mkv` 会剥掉扩展名，用 `abc123def` 去换直链。
 
+### Emby 302 网关：三种播放方式
+
+Emby 播 `.strm` 时会自己把字节拉下来再转发给播放器（服务器中转）。在
+「系统配置 → 播放直连（302 网关）」打开后，网关挡在 Emby 前面改写
+`PlaybackInfo` 响应，**客户端拿到什么播放地址由我们决定**，视频字节不再经过 NAS：
+
+| 模式（`emby_gateway_mode`） | Path / DirectStreamUrl | 适用 |
+|---|---|---|
+| `redirect`（默认） | 都指向相对 `/Videos/{id}/stream?Static=true`，网关 302 到 CDN | 兼容性最好；相对地址自动跟随客户端的协议 / 域名 / 反代前缀 |
+| `hybrid` | Path 给按客户端当前域名归一化的 `/d/` 直链，DirectStreamUrl 保留统一入口 | 支持 DirectPlay 的播放器少一跳、完全不碰 Emby，其余客户端仍有兜底 |
+| `direct` | 只给 `/d/` 直链并关掉 DirectStream | STRMhub 式的最短路；个别客户端不认绝对 Path 时换回 `hybrid` |
+
+三档都会：关掉 `SupportsTranscoding` 并删掉 `TranscodingUrl`（不让客户端挑 HLS）、
+把 `Container` 从 `strm` 改回真实容器、把客户端自己的凭据与 `UserId` 带回播放地址
+（Bearer / `ApiKey` / `MediaBrowser` 复合头都认）、在**打开条目详情**与 **PlaybackInfo**
+两个阶段提前把直链换好（冷解析不落在起播关键路径上）。`.strm` 里写死的内网地址会按
+客户端实际访问的 host 归一化，所以公网和局域网共用一份库都能直连；算不出客户端域名时
+自动退回 `redirect`，不会播不了。
+
 ---
 
 ## 电影墙 → 资源搜索 → 离线下载 → 自动同步 → 推送通知

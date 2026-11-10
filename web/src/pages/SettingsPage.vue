@@ -805,9 +805,29 @@ const emby = ref({
   // gwRunning 是进程回报的真实状态（配置不全时即使开关打开也不会接管）。
   gwOn: false,
   gwBypass: '',
+  gwMode: 'redirect',
   gwRunning: false,
   gwAddr: '',
 })
+/** 播放地址三档：前两家参考项目的做法合成，默认最兼容的那档。 */
+const gwModes = [
+  {
+    value: 'redirect',
+    label: '统一 302 入口',
+    desc: 'PlaybackInfo 一律改写成相对 /Videos/{id}/stream，由网关 302 到网盘。跟随客户端当前协议与域名，内外网、各类播放器都通用。',
+  },
+  {
+    value: 'hybrid',
+    label: '混合（两条路都给）',
+    desc: 'Path 给按客户端域名归一化的 /d/ 直链（支持 DirectPlay 的播放器少一跳、完全不碰 Emby），DirectStreamUrl 仍保留统一 302 入口兜底。',
+  },
+  {
+    value: 'direct',
+    label: '播放器直连 /d/',
+    desc: '只给 /d/ 直链并关掉 DirectStream，逼播放器自己直连播放代理；少一次跳转，但个别客户端可能不认绝对 Path。',
+  },
+]
+const gwModeDesc = computed(() => gwModes.find((m) => m.value === emby.value.gwMode)?.desc || '')
 const embyLibs = ref<ServerLib[]>([])
 const embyStatus = ref({ connected: false, serverName: '', version: '', libraries: 0, error: '' })
 const embyBusy = ref(false)
@@ -829,6 +849,9 @@ async function loadEmby() {
     const on = String(cfg?.emby_gateway_on ?? '').toLowerCase()
     emby.value.gwOn = ['1', 'on', 'true', 'yes'].includes(on)
     emby.value.gwBypass = cfg?.emby_gateway_bypass || ''
+    emby.value.gwMode = ['redirect', 'hybrid', 'direct'].includes(String(cfg?.emby_gateway_mode || ''))
+      ? String(cfg?.emby_gateway_mode)
+      : 'redirect'
     emby.value.gwRunning = !!cfg?.emby_gateway?.enabled
     emby.value.gwAddr = String(cfg?.emby_gateway?.listen || cfg?.emby_gateway?.addr || '')
     embyStatus.value = {
@@ -923,6 +946,7 @@ async function saveGateway() {
     await api.config.saveSettings({
       emby_gateway_on: emby.value.gwOn ? '1' : '0',
       emby_gateway_bypass: emby.value.gwBypass.trim(),
+      emby_gateway_mode: emby.value.gwMode,
     })
     await loadEmby()
     toast.success(
@@ -983,7 +1007,7 @@ const backups = [
  * main.go / package.json。这里只显示后端真实回报的版本，不再假装能联网查更新：
  * 本项目没有发布通道，那个「下载并替换二进制」按钮以前点了只会弹个 toast。
  */
-const currentVersion = computed(() => session.version || 'v0.5.4')
+const currentVersion = computed(() => session.version || 'v0.6.0')
 /** 本版变更：每次跑 bump-version.py 时顺手改这一栏，用户能一眼看出换没换版本。 */
 const releaseNotes = [
   '新增版本号机制（VERSION + scripts/bump-version.py），每次修复递增',
@@ -1025,6 +1049,9 @@ const releaseNotes = [
   'v0.3.5：刮削写文件失败时，日志会直接给出该执行的 chown 命令（之前只报 permission denied）',
   'v0.3.6：影视详情页的「返回」跟着来路走：从搜索结果进就退回搜索结果（搜索词与结果都还在），不再一律回「发现与订阅」',
   'v0.3.6：搜索结果里锁定影片后多了「详情」按钮，可先看海报简介再决定要不要转存',
+  'v0.6.0：302 网关合并两套思路：播放方式可切换「统一 302 入口 / 混合 / 播放器直连 /d/」，.strm 内网地址按客户端域名归一化',
+  'v0.6.0：凭据、UserId、真实容器一并修正；打开影片详情就开始预热直链，冷解析不再落在起播关键路径上',
+  'v0.6.0：订阅选集每 50 集一段（网页弹窗 + TG 键盘），79 集长剧可跳到集号，E61 之后也能选',
 ]
 </script>
 
@@ -1599,7 +1626,23 @@ const releaseNotes = [
         <HField label="不接管的客户端" hint="按 UA 子串匹配，命中就继续走 Emby 中转（个别播放器不跟 302）">
           <input v-model="emby.gwBypass" class="input" placeholder="例如：TV Box, Kodi" />
         </HField>
+        <HField label="播放方式" hint="保存后立即生效，不用重启；三条路都不让 Emby 读 .strm 中转字节">
+          <div class="row wrap" style="gap: 8px">
+            <button
+              v-for="m in gwModes"
+              :key="m.value"
+              class="btn btn-sm"
+              :class="emby.gwMode === m.value ? 'btn-primary' : 'btn-tertiary'"
+              @click="emby.gwMode = m.value"
+            >
+              {{ m.label }}
+            </button>
+          </div>
+        </HField>
+        <p class="muted small" style="margin: -2px 0 12px; line-height: 1.7">{{ gwModeDesc }}</p>
         <p class="muted small" style="margin: 0 0 12px; line-height: 1.7">
+          三种模式都会在「问怎么播」时改写 PlaybackInfo 并提前换好直链：打开条目详情就开始预热，
+          把 .strm 里写死的内网地址按客户端当前访问的域名归一化，媒体容器也从 <code class="mono">strm</code> 改回真实格式。
           播放器地址就填 <code class="mono">http://内网IP:6086</code>（公网用 <code class="mono">emby.你的域名</code>）——
           它和 .strm 里的 <code class="mono">/d/</code> 是同一个入口，原来那个独立的 18096 端口已经取消。
           转码请求不会被动，仍然走 Emby。

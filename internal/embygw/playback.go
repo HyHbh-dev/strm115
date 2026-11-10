@@ -1,6 +1,6 @@
 package embygw
 
-// 改写 PlaybackInfo：让所有客户端统一走本站的 302 入口。
+// 改写 PlaybackInfo：让所有客户端拿到「不经 Emby 中转」的播放地址。
 //
 // 为什么不能只靠「猜客户端会发什么 stream 路径」：Emby Web 发
 // /emby/videos/{id}/stream?static=true，SenPlayer 发
@@ -8,15 +8,15 @@ package embygw
 // 省掉 /emby 前缀、加上 MediaSourceId。每漏一种，那次播放就静默退回 Emby
 // 自己读 .strm 中转字节。日志里「播放请求未接管」记下的正是这些变体。
 //
-// 参考 115-station / STRMhub（同源的 MediaWarp 思路）：不追着客户端跑，而是在
-// PlaybackInfo 的响应里把媒体源的 DirectStreamUrl 改成本站入口，并关掉转码。
-// 播放器拿到什么地址是**我们说了算**，之后不管它是 Emby Web、SenPlayer、
-// Infuse 还是 iOS，都会来请求同一个 /Videos/{id}/stream?Static=true。
+// 两个参考项目（115-station / STRMhub，同源的 MediaWarp 思路）给的是同一条
+// 根治办法：在 PlaybackInfo 响应里把地址改掉，客户端发什么由我们决定。差别
+// 只在改向哪里：
 //
-// 与 115-station 的差别：它们把地址指到自己专门注册的 302 handler；我们直接
-// 复用网关已有的 streamItemID 分支 —— 同一个 URL 被网关接管时 302 到 CDN，
-// 万一没接管（解析失败 / 条目不是我们的 .strm）就原样反代给 Emby，Emby 认得
-// 这个官方路径，最差只是回到中转，不会播不了。
+//	115-station → 自己的 /Videos/{id}/stream 302 入口（相对路径，最兼容）
+//	STRMhub     → .strm 内容里的 /d/ 直链（DirectPlay，少一跳）
+//
+// 这里用 emby_gateway_mode 把两家的优点合成三档（见 mode.go），默认仍是
+// 115-station 那档：万一某个客户端不认绝对 Path，行为与已验证的 v0.5.4 一致。
 
 import (
 	"bytes"
@@ -24,16 +24,25 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// playbackStreamURL 是写进 PlaybackInfo 的相对地址。
+// 打开条目详情也视为「马上要播」：STRMhub 在这一步就后台取直链，用户看简介
+// 的那几秒把冷解析跑完，PlaybackInfo 阶段只剩缓存命中。
+var reItemDetail = regexp.MustCompile(`(?i)^/(?:emby/)?(?:Users/[^/]+/)?Items/[^/]+/?$`)
+
+// 第三方客户端把 UserId 放在复合鉴权头里，取流时 Emby 偶尔会要它。
+var reUserID = regexp.MustCompile(`(?i)UserId\s*=\s*"?([^",\s]+)"?`)
+
+// playbackStreamURL 是写进 PlaybackInfo 的相对地址（115-station 那一路）。
 //
 // 用相对路径：客户端沿用自己正在访问的协议 / 域名 / 反代前缀（公网走
 // cloudflared、局域网走 6086 都对），不去读不可信的 X-Forwarded-Host。
 // Static 故意用官方那种首字母大写的写法 —— 反正网关现在大小写都不敏感。
-func playbackStreamURL(itemID, sourceID, token string) string {
+func playbackStreamURL(itemID, sourceID, token, userID string) string {
 	q := url.Values{"Static": {"true"}}
 	if sourceID != "" {
 		q.Set("MediaSourceId", sourceID)
@@ -42,6 +51,10 @@ func playbackStreamURL(itemID, sourceID, token string) string {
 	// 绝不能把服务端兜底的 API Key 塞进返回给客户端的 URL。
 	if token != "" {
 		q.Set("api_key", token)
+		q.Set("ApiKey", token) // Jellyfin 10.11 起认这个写法
+	}
+	if userID != "" {
+		q.Set("UserId", userID)
 	}
 	return "/Videos/" + url.PathEscape(itemID) + "/stream?" + q.Encode()
 }
@@ -62,25 +75,65 @@ func isOurStrmSource(p string) bool {
 	return ok
 }
 
+// queryFold 取参数名忽略大小写的第一个值（参考 115-station 的 embyClientToken）。
+func queryFold(r *http.Request, key string) string {
+	if r == nil {
+		return ""
+	}
+	for k, vals := range r.URL.Query() {
+		if strings.EqualFold(k, key) && len(vals) > 0 {
+			return strings.TrimSpace(vals[0])
+		}
+	}
+	return ""
+}
+
 // requestToken 只取「客户端自己带过来」的凭据，不含服务端兜底 Key。
+// 参考 115-station：第三方客户端可能用 Bearer、Jellyfin 的 ApiKey 查询参数，
+// 或者把 token 塞在 MediaBrowser 复合头里，只认 X-Emby-Token 会漏掉一大半。
 func requestToken(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
 	for _, v := range []string{
 		r.Header.Get("X-Emby-Token"),
-		r.URL.Query().Get("api_key"),
 		r.Header.Get("X-MediaBrowser-Token"),
+		queryFold(r, "api_key"),
+		queryFold(r, "apikey"), // Jellyfin 10.11 起不带下划线
 	} {
 		if v = strings.TrimSpace(v); v != "" {
 			return v
 		}
 	}
 	for _, v := range []string{
+		r.Header.Get("Authorization"),
+		r.Header.Get("X-Emby-Authorization"),
+	} {
+		if v = strings.TrimSpace(v); v == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(v), "bearer ") {
+			return strings.TrimSpace(v[7:])
+		}
+		if m := reAuthToken.FindStringSubmatch(v); len(m) == 2 {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+func requestUserID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if id := queryFold(r, "userid"); id != "" {
+		return id
+	}
+	for _, v := range []string{
 		r.Header.Get("X-Emby-Authorization"),
 		r.Header.Get("Authorization"),
 	} {
-		if m := reAuthToken.FindStringSubmatch(v); len(m) == 2 {
+		if m := reUserID.FindStringSubmatch(v); len(m) == 2 {
 			return m[1]
 		}
 	}
@@ -98,6 +151,7 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 	if m == nil {
 		return nil
 	}
+	start := time.Now()
 	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "json") {
 		return nil
 	}
@@ -132,7 +186,12 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 		return nil
 	}
 
-	changed := 0
+	base, hasBase := baseFromContext(resp.Request.Context())
+	mode := ParseMode(string(g.opt.Mode))
+	userID := requestUserID(resp.Request)
+	ua := resp.Request.UserAgent()
+
+	changed, withDirect := 0, 0
 	for _, s := range sources {
 		ms, ok := s.(map[string]any)
 		if !ok {
@@ -151,15 +210,49 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 			continue
 		}
 		sourceID, _ := ms["Id"].(string)
-		streamURL := playbackStreamURL(m[1], sourceID, token)
-		ms["Path"] = streamURL
+		streamURL := playbackStreamURL(m[1], sourceID, token, userID)
+
+		// 两家共有的优点：此刻就知道 pickcode，先把直链换好（取流时命中缓存），
+		// 并从 .strm 内容里读出真实容器，别让客户端按 "strm" 猜格式。
+		raw, pick, container := g.sourceDirectURL(p)
+		if pick != "" {
+			g.prewarmPick(pick, ua)
+		}
+
+		// STRMhub 那一路：把 .strm 里写死的内网地址换成「客户端此刻访问的」地址。
+		// 算不出来（Path 是本地文件但读不到、Host 不可信）就自动退回 115-station
+		// 的相对入口 —— 播放不会因为开了新模式而挂掉。
+		direct := ""
+		if mode != ModeRedirect && hasBase {
+			direct, _ = normalizeDirectURL(raw, base)
+		}
+		if direct != "" {
+			withDirect++
+		}
+
 		ms["DirectStreamUrl"] = streamURL
+		switch {
+		case direct != "" && mode == ModeDirect:
+			ms["Path"] = direct
+			delete(ms, "DirectStreamUrl")
+			ms["SupportsDirectPlay"] = true
+			ms["SupportsDirectStream"] = false
+		case direct != "" && mode == ModeHybrid:
+			ms["Path"] = direct
+			ms["SupportsDirectPlay"] = true
+			ms["SupportsDirectStream"] = true
+		default:
+			ms["Path"] = streamURL
+			ms["SupportsDirectPlay"] = false
+			ms["SupportsDirectStream"] = true
+		}
 		ms["Protocol"] = "Http"
 		ms["IsRemote"] = true
-		ms["SupportsDirectPlay"] = false
-		ms["SupportsDirectStream"] = true
 		ms["SupportsTranscoding"] = false
 		ms["AddApiKeyToDirectStreamUrl"] = false
+		if c := container; c != "" && c != "strm" {
+			ms["Container"] = c
+		}
 		// 留着 TranscodingUrl 会让 SenPlayer 这类客户端挑 HLS：那时它拿到的
 		// 是 Emby 转出来的 m3u8，302 网关按设计不接管（分片不是原始文件）。
 		for _, k := range []string{
@@ -170,6 +263,11 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 		}
 		changed++
 	}
+	// 无论有没有改写都留一行摘要：用户说「还是走了中转」时，一眼能看出
+	// 是媒体源没认出来，还是改写没生效（参考项目都这么做）。
+	g.log.Info("PlaybackInfo 改写摘要", "item", m[1], "mode", mode,
+		"sources", len(sources), "rewritten", changed, "direct", withDirect,
+		"ms", time.Since(start).Milliseconds())
 	if changed == 0 {
 		restore()
 		return nil
@@ -184,6 +282,39 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 	resp.ContentLength = int64(len(out))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
 	resp.Header.Del("Content-Encoding")
-	g.log.Info("PlaybackInfo 已改写为 302 入口", "item", m[1], "sources", changed)
+	return nil
+}
+
+// prefetchOnItemDetail 是 STRMhub 的「详情页预取」：用户打开详情到按下播放
+// 之间通常有好几秒，这段时间足够把网盘直链换好；PlaybackInfo 阶段再预热
+// 就只剩缓存命中。只触发后台取链，不改响应体一个字节。
+func (g *Gateway) prefetchOnItemDetail(resp *http.Response) error {
+	if resp == nil || resp.Request == nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	if resp.Request.Method != http.MethodGet ||
+		!reItemDetail.MatchString(resp.Request.URL.Path) ||
+		rePlaybackInfo.MatchString(resp.Request.URL.Path) {
+		return nil
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "json") ||
+		resp.Header.Get("Content-Encoding") != "" {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	var d struct {
+		Path string `json:"Path"`
+	}
+	if json.Unmarshal(body, &d) != nil || !isOurStrmSource(d.Path) {
+		return nil
+	}
+	if _, pick, _ := g.sourceDirectURL(d.Path); pick != "" {
+		g.prewarmPick(pick, resp.Request.UserAgent())
+	}
 	return nil
 }

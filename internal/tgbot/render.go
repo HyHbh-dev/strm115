@@ -575,8 +575,35 @@ func nameKeyboard(hits []TitleHit, can bool) InlineKeyboard {
 	return kb
 }
 
-// 一季几百集时别把键盘撑爆：前 60 集够选起播线了，剩下的用「从头追」。
-const maxSubEpisodeButtons = 60
+// 一季几百集时把集号按 50 集分一段，用翻段按钮切换。
+// 不再把后面的集直接砍掉——以前它们根本点不到。
+const subEpisodeSegment = 50
+
+// subEpisodePages 是这一季按 50 集分段后的段数（至少 1 段）。
+func subEpisodePages(episodes int) int {
+	if episodes <= 0 {
+		return 1
+	}
+	return (episodes + subEpisodeSegment - 1) / subEpisodeSegment
+}
+
+// subEpisodeRange 返回第 page 段（从 0 起）的起止集号；越界页夹回最后一段，
+// 保证键盘永远不空。start/end 都是 1 起的集号。
+func subEpisodeRange(episodes, page int) (start, end int) {
+	pages := subEpisodePages(episodes)
+	if page < 0 {
+		page = 0
+	}
+	if page >= pages {
+		page = pages - 1
+	}
+	start = page*subEpisodeSegment + 1
+	end = start + subEpisodeSegment - 1
+	if end > episodes {
+		end = episodes
+	}
+	return
+}
 
 func isTVHit(h TitleHit) bool { return h.Kind == "tv" || h.Kind == "series" }
 
@@ -620,23 +647,38 @@ func subSeasonKeyboard(seasons []SubSeason) InlineKeyboard {
 	return append(kb, []Button{{Text: "❌ 取消", CallbackData: "sbx"}})
 }
 
-func renderSubEpisodes(hit TitleHit, season, episodes int) string {
+func renderSubEpisodes(hit TitleHit, season, episodes, page int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⭐ 订阅《%s》· 第 %d 季",
 		escape(cut(subTitle(hit), 90)), season)
 	b.WriteString("\n\n<b>选起始集</b>：这一集及之前不下载。")
-	if episodes > maxSubEpisodeButtons {
-		fmt.Fprintf(&b, "\n<i>这一季有 %d 集，只列出前 %d 集。</i>",
-			episodes, maxSubEpisodeButtons)
+	pages := subEpisodePages(episodes)
+	if page < 0 {
+		page = 0
 	}
+	if page >= pages {
+		page = pages - 1
+	}
+	start, end := subEpisodeRange(episodes, page)
+	fmt.Fprintf(&b, "\n<i>第 %d/%d 段 · 共 %d 集（E%02d–E%02d）</i>",
+		page+1, pages, episodes, start, end)
 	b.WriteString("\n订阅后按 TMDB 的单集播出日生成你的追更日历，到播出日自动搜资源。")
 	return b.String()
 }
 
-func subEpisodeKeyboard(season, episodes int) InlineKeyboard {
+func subEpisodeKeyboard(season, episodes, page int) InlineKeyboard {
 	kb := InlineKeyboard{}
+	pages := subEpisodePages(episodes)
+	if page < 0 {
+		page = 0
+	}
+	if page >= pages {
+		page = pages - 1
+	}
+	start, end := subEpisodeRange(episodes, page)
+
 	row := []Button{}
-	for e := 1; e <= episodes && e <= maxSubEpisodeButtons; e++ {
+	for e := start; e <= end; e++ {
 		row = append(row, Button{
 			Text:         fmt.Sprintf("E%02d", e),
 			CallbackData: fmt.Sprintf("sbe:%d:%d", season, e),
@@ -649,6 +691,30 @@ func subEpisodeKeyboard(season, episodes int) InlineKeyboard {
 	if len(row) > 0 {
 		kb = append(kb, row)
 	}
+
+	// 还有上一段 / 下一段时另起一行加翻段按钮；只有一段时这整行不出现，
+	// 保持原来的键盘形状（既有测试的行数断言才不会破）。
+	if pages > 1 {
+		nav := []Button{}
+		if page > 0 {
+			ps, pe := subEpisodeRange(episodes, page-1)
+			nav = append(nav, Button{
+				Text:         fmt.Sprintf("◀ E%02d–E%02d", ps, pe),
+				CallbackData: fmt.Sprintf("sbpg:%d", page-1),
+			})
+		}
+		if page+1 < pages {
+			ns, ne := subEpisodeRange(episodes, page+1)
+			nav = append(nav, Button{
+				Text:         fmt.Sprintf("E%02d–E%02d ▶", ns, ne),
+				CallbackData: fmt.Sprintf("sbpg:%d", page+1),
+			})
+		}
+		if len(nav) > 0 {
+			kb = append(kb, nav)
+		}
+	}
+
 	return append(kb, []Button{
 		{Text: "◀ 返回选季", CallbackData: "sbback"},
 		{Text: "❌ 取消", CallbackData: "sbx"},

@@ -58,6 +58,37 @@ const season = ref(1)
 const episode = ref(1)
 const seasonLoading = ref(false)
 
+// 一季可能上百集：按 50 集分一段展示，别让一个固定高度的滚动网格吞掉后面几十集。
+const EP_SEGMENT = 50
+const segment = ref(0)
+const jumpTo = ref<string | number>('')
+
+const totalEpisodes = computed(() => episodeCountOf(season.value))
+const segmentCount = computed(() => Math.max(1, Math.ceil(totalEpisodes.value / EP_SEGMENT)))
+const segmentStart = computed(() => segment.value * EP_SEGMENT + 1)
+const segmentEnd = computed(() => Math.min(totalEpisodes.value, segmentStart.value + EP_SEGMENT - 1))
+const segmentEpisodes = computed(() => {
+  const out: number[] = []
+  for (let n = segmentStart.value; n <= segmentEnd.value; n++) out.push(n)
+  return out
+})
+const showSegmentNav = computed(() => totalEpisodes.value > EP_SEGMENT)
+
+function segmentLabel(i: number): string {
+  const start = i * EP_SEGMENT + 1
+  const end = Math.min(totalEpisodes.value, start + EP_SEGMENT - 1)
+  return `E${String(start).padStart(2, '0')}–E${String(end).padStart(2, '0')}`
+}
+const segments = computed(() =>
+  Array.from({ length: segmentCount.value }, (_, i) => ({ index: i, label: segmentLabel(i) })),
+)
+
+// 季清单是异步刷新的：集数变少时把段号夹回合法范围，免得网格空着。
+watch(totalEpisodes, (total) => {
+  const last = Math.max(0, Math.ceil(total / EP_SEGMENT) - 1)
+  if (segment.value > last) segment.value = last
+})
+
 const isTV = computed(() => props.hit?.kind === 'tv')
 const hasTMDB = computed(() => !!props.hit && props.hit.source !== 'douban' && props.hit.id > 0)
 const already = computed(() => {
@@ -86,6 +117,8 @@ async function loadSeasons() {
     const r: any = await api.subscriptions.episodes(h.id)
     seasons.value = Array.isArray(r?.seasons) ? r.seasons.filter((s: Season) => s.season > 0) : []
     fromBeginning.value = true
+    segment.value = 0
+    jumpTo.value = ''
     const first = seasons.value[0]
     if (first) {
       season.value = first.season
@@ -118,6 +151,8 @@ async function loadEpisodes(s: number) {
 async function chooseSeason(s: number) {
   season.value = s
   episode.value = 1
+  segment.value = 0
+  jumpTo.value = ''
   fromBeginning.value = false
   await loadEpisodes(s)
 }
@@ -125,6 +160,33 @@ async function chooseSeason(s: number) {
 function chooseEpisode(e: number) {
   episode.value = e
   fromBeginning.value = false
+  // 从「跳到集号」进来时集号可能不在当前段，段号跟着走，grid 里才高亮得到它。
+  segment.value = Math.floor((e - 1) / EP_SEGMENT)
+}
+
+function chooseSegment(i: number) {
+  if (i < 0 || i >= segmentCount.value) return
+  segment.value = i
+}
+
+function jumpToEpisode() {
+  const total = totalEpisodes.value
+  if (!total) {
+    toast.error('这一季 TMDB 没给集数，先选「从头追」')
+    return
+  }
+  const raw = String(jumpTo.value ?? '').trim()
+  if (!/^\d+$/.test(raw)) {
+    toast.error('请输入集号（数字）')
+    return
+  }
+  const n = Number(raw)
+  if (!Number.isSafeInteger(n) || n < 1 || n > total) {
+    toast.error(`集号要在 1–${total} 之间`)
+    return
+  }
+  chooseEpisode(n)
+  jumpTo.value = ''
 }
 
 function episodeCountOf(s: number): number {
@@ -188,6 +250,8 @@ watch(
   () => {
     seasons.value = []
     episodes.value = []
+    segment.value = 0
+    jumpTo.value = ''
     if (props.modelValue) void loadSeasons()
   },
 )
@@ -243,10 +307,38 @@ watch(
               </button>
             </div>
 
+            <div v-if="!seasonLoading && showSegmentNav" class="row wrap" style="gap: 8px; margin-bottom: 10px">
+              <span class="small muted">分段</span>
+              <button
+                v-for="seg in segments"
+                :key="seg.index"
+                class="btn btn-sm"
+                :class="segment === seg.index ? 'btn-primary' : 'btn-tertiary'"
+                @click="chooseSegment(seg.index)"
+              >
+                {{ seg.label }}
+              </button>
+              <span class="small muted">共 {{ totalEpisodes }} 集 · 第 {{ segment + 1 }}/{{ segmentCount }} 段</span>
+            </div>
+
+            <div v-if="!seasonLoading && totalEpisodes" class="row wrap" style="gap: 8px; margin-bottom: 10px">
+              <span class="small muted">跳到集号</span>
+              <input
+                v-model="jumpTo"
+                class="input sub-jump-input"
+                type="number"
+                min="1"
+                :max="totalEpisodes"
+                placeholder="例如 60"
+                @keydown.enter="jumpToEpisode"
+              />
+              <button class="btn btn-sm btn-tertiary" @click="jumpToEpisode">跳</button>
+            </div>
+
             <div v-if="seasonLoading" class="muted small">正在读这一季的逐集播出日…</div>
             <div v-else class="ep-grid">
               <button
-                v-for="n in episodeCountOf(season)"
+                v-for="n in segmentEpisodes"
                 :key="n"
                 class="ep-cell"
                 :class="{ active: !fromBeginning && episode === n }"
@@ -257,7 +349,7 @@ watch(
                 <span class="muted tiny">{{ airDateOf(n) || '未定档' }}</span>
               </button>
             </div>
-            <p v-if="!episodeCountOf(season)" class="muted small">这一季 TMDB 没给集数，先选「从头追」。</p>
+            <p v-if="!totalEpisodes" class="muted small">这一季 TMDB 没给集数，先选「从头追」。</p>
           </div>
         </template>
       </template>
@@ -307,8 +399,17 @@ watch(
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
   gap: 8px;
-  max-height: 230px;
+  /* 每段最多 50 格：放宽成一段短滚动。外层 .modal-body 才是主滚动容器，
+     contain 防止网格滚到底又把整个弹窗带着滚（双层滚动）。 */
+  max-height: 320px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.sub-jump-input {
+  width: 104px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12.5px;
 }
 .ep-cell {
   display: flex;

@@ -48,7 +48,7 @@ interface SubView {
   id: number
   state: string
   quality: string
-  /** 起播线：这一集及之前不找资源，程序提交成功后自己往前推。0/0 = 从头追 */
+  /** 起播线：从这一集开始追（含），程序提交成功后自己往前推。0/0 = 从头追 */
   watermark_season: number
   watermark_episode: number
   total_episodes: number

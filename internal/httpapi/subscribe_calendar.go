@@ -106,7 +106,7 @@ func (s *Server) materializeCalendar(ctx context.Context, sub store.Subscription
 	if err := s.st.UpsertSubscriptionEpisodes(ctx, sub.ID, out); err != nil {
 		return 0, err
 	}
-	// 「从 S02E05 开始订阅」：之前的集不做下载，但保留在日历里标成已跳过，
+	// 「从 S02E05 开始订阅」：起始集本身要追，只把更早的集标成已跳过，
 	// 这样周历上看得见全貌，也不会被轮询器翻出来。
 	if sub.WatermarkSeason > 0 || sub.WatermarkEpisode > 0 {
 		if err := s.st.SkipEpisodesBefore(ctx, sub.ID,

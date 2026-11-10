@@ -2,7 +2,8 @@
 /**
  * 起播线滑杆 —— 全站唯一一份「像调音量那样拖到哪一集」的实现。
  *
- * 水位线和限制线合并之后，这条线只表达一件事：**这一集及之前不找资源**。
+ * 水位线和限制线合并之后，这条线只表达一件事：**从这一集开始追（含这一集）**，
+ * 之前的集不找资源。
  * 程序提交离线成功会自己往前推，用户也可以在这里把线拖到任意位置。
  *
  * 为什么抽出来：同一个滑杆要在三个地方出现，而且语义必须完全一致 ——
@@ -139,7 +140,7 @@ async function save() {
     ok = true
     toast.success(
       '起播线已保存',
-      e.episode ? `只找 ${label(e)} 之后的资源` : '从第一集开始找',
+      e.episode ? `从 ${label(e)} 开始找（含这一集）` : '从第一集开始找',
     )
     emit('saved', e)
     // 共享订阅索引里有整行（水位线 / 总集数），日历抽屉靠它显示。
@@ -161,7 +162,7 @@ async function save() {
     <div class="sub-line-head">
       <span class="muted small">起播线</span>
       <b class="mono">{{ label(ep) }}</b>
-      <span class="muted small">{{ ep.episode ? '及之前不下载' : '不设线，从第一集开始' }}</span>
+      <span class="muted small">{{ ep.episode ? '起（含这一集）' : '不设线，从第一集开始' }}</span>
     </div>
     <input
       v-model.number="idx"
@@ -182,7 +183,7 @@ async function save() {
         v-for="s in seasonLens"
         :key="s.season"
         class="btn btn-sm btn-ghost"
-        :title="`滑到 S${pad2(s.season)} 末集：这一季及之前都不找`"
+        :title="`滑到 S${pad2(s.season)} 末集：从这一集开始追（含）`"
         @click="idx = seasonEnd(s.season)"
       >
         S{{ pad2(s.season) }}

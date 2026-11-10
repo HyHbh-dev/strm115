@@ -109,31 +109,32 @@ func (s *Store) HasSubscriptionCalendar(ctx context.Context, subID int64) (bool,
 	return n > 0, err
 }
 
-// SkipEpisodesBefore 把「起始集及之前」的集标成 skipped。
+// SkipEpisodesBefore 把「起始集之前」的集标成 skipped。
 //
-// 用户选「从 S02E05 开始订阅」时，前两季不该再被搜出来下载。只标 done 之外
-// 的行：已经下载过的集保持 done，别把历史进度抹掉。
+// 用户选「从 S02E05 开始订阅」时，起始集本身要跟着追，只有 S02E01~E04
+// 和更早的季不补。只标 done 之外的行：已经下载过的集保持 done，别把历史
+// 进度抹掉。
 func (s *Store) SkipEpisodesBefore(ctx context.Context, subID int64, season, episode int) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE subscription_episodes SET status = ?, updated_at = ?
 		 WHERE subscription_id = ? AND status != ?
-		   AND (season < ? OR (season = ? AND episode <= ?))`,
+		   AND (season < ? OR (season = ? AND episode < ?))`,
 		SubEpSkipped, time.Now().Format(time.RFC3339), subID, SubEpDone,
 		season, season, episode)
 	return err
 }
 
-// UnskipEpisodesAfter 把起播线之后、之前被跳过的集恢复成待搜。
+// UnskipEpisodesAfter 把起播线之后（含起播线本身）、之前被跳过的集恢复成待搜。
 //
-// 用户把起播线从 S02E05 挪回 S01E01 时，前面那些 skipped 不该永远躺着：
-// 恢复成「明天再排一次」的状态，让轮询器自然接手。已经 done 的集不动。
+// 用户把起播线从 S02E05 挪回 S02E03 时，E03 及之后那些 skipped 不该永远
+// 躺着：恢复成「明天再排一次」的状态，让轮询器自然接手。已经 done 的集不动。
 func (s *Store) UnskipEpisodesAfter(ctx context.Context, subID int64, season, episode int, today string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE subscription_episodes
 		 SET status = CASE WHEN air_date > ? THEN ? ELSE ? END,
 		     next_try_at = '', updated_at = ?
 		 WHERE subscription_id = ? AND status = ?
-		   AND (season > ? OR (season = ? AND episode > ?))`,
+		   AND (season > ? OR (season = ? AND episode >= ?))`,
 		today, SubEpPending, SubEpWaiting, time.Now().Format(time.RFC3339),
 		subID, SubEpSkipped, season, season, episode)
 	return err

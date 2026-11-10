@@ -26,7 +26,7 @@ func TestBotSubscribeSharesCreationAndCalendar(t *testing.T) {
 
 	res, err := s.botSubscribe(ctx, tgbot.SubscribeRequest{
 		TMDbID: 94605, Kind: "tv", Title: "乱填的名字", Original: "Test Show",
-		Year: "2020", WatermarkSeason: 1, WatermarkEpisode: 1,
+		Year: "2020", WatermarkSeason: 1, WatermarkEpisode: 2,
 	})
 	if err != nil {
 		t.Fatalf("TG 订阅失败：%v", err)
@@ -44,8 +44,17 @@ func TestBotSubscribeSharesCreationAndCalendar(t *testing.T) {
 		t.Fatalf("日历应有 4 行，实际 %d / %v", len(eps), err)
 	}
 	for _, e := range eps {
-		if e.Code() == "S01E01" && e.Status != store.SubEpSkipped {
-			t.Errorf("起播线及之前应跳过，实际 %s = %s", e.Code(), e.Status)
+		switch e.Code() {
+		case "S01E01":
+			// 起播线之前：不搜。
+			if e.Status != store.SubEpSkipped {
+				t.Errorf("起播线之前应跳过，实际 %s = %s", e.Code(), e.Status)
+			}
+		case "S01E02":
+			// 起播线本身：含这一集，必须留着待搜。
+			if e.Status == store.SubEpSkipped {
+				t.Errorf("起始集本身不该跳过，实际 %s = %s", e.Code(), e.Status)
+			}
 		}
 	}
 

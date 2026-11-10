@@ -618,7 +618,7 @@ func renderSubSeasons(hit TitleHit, seasons []SubSeason) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⭐ 订阅《%s》", escape(cut(subTitle(hit), 90)))
 	b.WriteString("\n\n<b>从哪一集开始订阅？</b>")
-	b.WriteString("\n起始集及之前不下载，也不会进搜索队列。")
+	b.WriteString("\n从选中的这一集开始追（含这一集），之前的集不下载。")
 	if len(seasons) > 0 {
 		b.WriteString("\n点「从头追」订阅全部集，或选一季再挑集号。")
 	} else {
@@ -651,7 +651,7 @@ func renderSubEpisodes(hit TitleHit, season, episodes, page int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⭐ 订阅《%s》· 第 %d 季",
 		escape(cut(subTitle(hit), 90)), season)
-	b.WriteString("\n\n<b>选起始集</b>：这一集及之前不下载。")
+	b.WriteString("\n\n<b>选起始集</b>：从这一集开始追（含这一集）。")
 	pages := subEpisodePages(episodes)
 	if page < 0 {
 		page = 0
@@ -740,7 +740,7 @@ func renderSubResult(hit TitleHit, res *SubscribeResult, ws, we int, errText str
 	if isTVHit(hit) || res.CalendarTotal > 0 {
 		start := "从头追（全部集）"
 		if ws > 0 || we > 0 {
-			start = fmt.Sprintf("从 S%02dE%02d 之后开始", ws, we)
+			start = fmt.Sprintf("从 S%02dE%02d 开始（含这一集）", ws, we)
 		}
 		return fmt.Sprintf("✅ 已订阅《%s》（剧集）\n\n%s · 已生成 %d 集专有追更日历\n"+
 			"到播出日自动搜资源，没搜到的集每天重试一次。",

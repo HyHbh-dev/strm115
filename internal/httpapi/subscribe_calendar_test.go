@@ -49,7 +49,7 @@ func withFakeTVSeasons(t *testing.T, s *Server, st *store.Store) {
 }
 
 // TestSubscriptionCalendarMaterialized 验证「建订阅 → 按 TMDB 集数集合物化专有日历
-// → 起播线之前的集跳过 → 播出日决定状态」这条主干。
+// → 起播线之前的集跳过、起播线本身保留 → 播出日决定状态」这条主干。
 func TestSubscriptionCalendarMaterialized(t *testing.T) {
 	s, st := newServerWithStore(t)
 	withFakeTVSeasons(t, s, st)
@@ -58,7 +58,7 @@ func TestSubscriptionCalendarMaterialized(t *testing.T) {
 
 	rec, _ := doJSON(t, h, http.MethodPost, "/api/subscriptions", map[string]any{
 		"tmdb_id": 94605, "media_type": "tv", "title": "测试剧",
-		"watermark_season": 1, "watermark_episode": 1,
+		"watermark_season": 1, "watermark_episode": 2,
 	}, cookies)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("建订阅失败 %d: %s", rec.Code, rec.Body.String())
@@ -82,8 +82,8 @@ func TestSubscriptionCalendarMaterialized(t *testing.T) {
 		t.Fatalf("日历应有 4 行，实际 %d", len(eps))
 	}
 	want := map[string]string{
-		"S01E01": store.SubEpSkipped, // 起播线及之前
-		"S01E02": store.SubEpWaiting, // 已播、待搜
+		"S01E01": store.SubEpSkipped, // 起播线之前：不搜
+		"S01E02": store.SubEpWaiting, // 起播线本身（含），已播、待搜
 		"S02E01": store.SubEpPending, // 2099 年才播
 		"S02E02": store.SubEpPending,
 	}
@@ -115,7 +115,7 @@ func TestSubscriptionCalendarMaterialized(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cal.Total != 3 {
-		t.Fatalf("应回 3 集（4 集里跳过了 S01E01），实际 %d", cal.Total)
+		t.Fatalf("应回 3 集（4 集里只跳过 S01E01），实际 %d", cal.Total)
 	}
 	for _, e := range cal.Items {
 		if e.Title != "测试剧" {

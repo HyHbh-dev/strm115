@@ -310,7 +310,7 @@ const subText: Record<string, string> = {
                 <span class="badge badge-accent">{{ subText[d.sub.state] || d.sub.state }}</span>
               </div>
               <div class="row-between small">
-                <span class="muted">起播线</span>
+                <span class="muted">起播线（含）</span>
                 <span class="mono">S{{ d.sub.watermark_season }}E{{ d.sub.watermark_episode }}</span>
               </div>
               <div v-if="d.sub.total_episodes" class="row-between small">

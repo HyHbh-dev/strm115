@@ -417,7 +417,7 @@ export const api = {
       quality?: string
       min_size?: number
       max_size?: number
-      /** 起播线：这一集及之前不找资源不下发；0/0 = 从头追 */
+      /** 起播线：从这一集开始追（含这一集）；0/0 = 从头追 */
       watermark_season?: number
       watermark_episode?: number
     }) => http.post('/subscriptions', body),

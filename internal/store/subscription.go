@@ -44,11 +44,13 @@ type Subscription struct {
 	MinSize       int64  `json:"min_size,omitempty"` // GB
 	MaxSize       int64  `json:"max_size,omitempty"` // GB，0 = 不限
 	State         string `json:"state"`
-	// Watermark 是「起播线」：这一集及之前一律不下载，只找严格晚于它的集。
+	// Watermark 是「起播线」：从这一集开始追（含这一集），之前的集不补。
 	//
 	// 以前这里和水位线是两条线（程序自动推进的水位线 + 用户设的限制线），
 	// 界面上两个概念、两处文案，用户经常设错。现在合并成一条：
-	// 用户用滑杆改它，程序提交成功后也推进它，语义永远是「已经交到第几集」。
+	// 用户用滑杆改它，程序提交成功后也推进它。专有日历靠每集的 done 标记
+	// 防重复下载，不靠这条线，所以推进后不会把刚下的集重新排队。
+	// 0/0 = 从头追（没有集被跳过）。
 	WatermarkSeason  int       `json:"watermark_season"`
 	WatermarkEpisode int       `json:"watermark_episode"`
 	TotalEpisodes    int       `json:"total_episodes,omitempty"`

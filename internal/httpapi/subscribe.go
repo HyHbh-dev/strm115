@@ -80,8 +80,8 @@ func (s *Server) handleCreateSub(w http.ResponseWriter, r *http.Request) {
 		Quality       string `json:"quality"`
 		MinSize       int64  `json:"min_size"`
 		MaxSize       int64  `json:"max_size"`
-		// 起播线：这一集及之前不下载。只给季不给集是合法的
-		//（S02E00 表示「S01 整季都不要」），所以这里用普通 int，缺省 0/0 = 从头。
+		// 起播线：从这一集开始追（含这一集），之前的集不补。0/0 = 从头追。
+		// 只给季不给集是合法的（S02E00 表示「S01 整季跳过，从 S02E01 开始」）。
 		WatermarkSeason  int `json:"watermark_season"`
 		WatermarkEpisode int `json:"watermark_episode"`
 	}
@@ -283,8 +283,9 @@ func (s *Server) handleUpdateSub(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		// 专有日历要跟着起播线走：往后挪 = 前面的集不再搜；往前挪 = 之前
-		// 跳过的集恢复待搜。只改订阅表不改日历的话，界面和轮询器会各说各话。
+		// 专有日历要跟着起播线走：往后挪 = 起始集之前的集不再搜；往前挪 =
+		// 之前跳过的集（含新的起始集）恢复待搜。只改订阅表不改日历的话，
+		// 界面和轮询器会各说各话。
 		if err := s.st.SkipEpisodesBefore(r.Context(), id,
 			*body.WatermarkSeason, *body.WatermarkEpisode); err != nil {
 			s.log.Warn("同步起播线到专有日历失败", "id", id, "err", err)

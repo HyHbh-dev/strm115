@@ -53,7 +53,7 @@ type SubSeason struct {
 }
 
 // SubscribeRequest 是一次订阅。Watermark 语义和网页一致：
-// 「这一集及之前不下载」，0/0 = 从头追。
+// 「从这一集开始追（含这一集）」，0/0 = 从头追。
 type SubscribeRequest struct {
 	TMDbID           int
 	Kind             string // movie / tv

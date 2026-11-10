@@ -5,8 +5,8 @@
  * 剧集要先按 TMDB 返回的「季 → 集」集合选起始集：这是后端生成专有播放
  * 日历的依据，选错就是白白把前面几十集排进重试队列。电影没有集数，直接订。
  *
- * 起始集用「这一集及之前不下载」的语义（后端 watermark），所以弹窗里
- * 默认给「从头追」，选到 S02E05 就表示 S02E05 及之前都不找。
+ * 起始集用「从这一集开始追（含这一集）」的语义（后端 watermark），弹窗里
+ * 默认给「从头追」，选到 S02E05 就表示 E05 也要下、E01~E04 不补。
  */
 import { computed, ref, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -120,7 +120,7 @@ const already = computed(() => {
 const startLabel = computed(() => {
   if (!isTV.value) return '有资源就下一次'
   if (fromBeginning.value) return '从第 1 季第 1 集开始（从头追）'
-  return `从 S${String(season.value).padStart(2, '0')}E${String(episode.value).padStart(2, '0')} 之后开始`
+  return `从 S${String(season.value).padStart(2, '0')}E${String(episode.value).padStart(2, '0')} 开始（含这一集）`
 })
 
 function close() {
@@ -384,14 +384,14 @@ watch(
         <template v-else>
           <div class="sub-start">
             <strong class="small">从哪一集开始订阅</strong>
-            <p class="muted small">起始集及之前的集不会下载，也不会进搜索队列。</p>
+            <p class="muted small">从选中的这一集开始追（含这一集），之前的集不下载。</p>
             <label class="row" style="gap: 8px; margin-top: 8px; cursor: pointer">
               <input v-model="fromBeginning" type="radio" :value="true" />
               <span class="small">从头追（全部集都订阅）</span>
             </label>
             <label class="row" style="gap: 8px; cursor: pointer">
               <input v-model="fromBeginning" type="radio" :value="false" />
-              <span class="small">从指定集之后开始</span>
+              <span class="small">从指定集开始（含这一集）</span>
             </label>
           </div>
 

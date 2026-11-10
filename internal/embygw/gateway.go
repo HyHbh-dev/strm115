@@ -82,6 +82,11 @@ type Gateway struct {
 	// PlaybackInfo，每个都去换一次直链纯属浪费网盘配额。
 	warmMu sync.Mutex
 	warm   map[string]bool
+
+	// PlaybackInfo 阶段记下的 itemID → MediaSource Id。客户端随后按简化路径
+	// 请求外挂字幕时，靠它把缺的那段补回去（见 subtitle.go）。
+	srcMu      sync.RWMutex
+	sourceIDs  map[string]string
 }
 
 // 客户端取「原始文件」的几种路径形态：
@@ -159,6 +164,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 播放代理优先：同一个端口既要能 302 直链，也要能当 Emby 入口用。
 	if g.opt.Play != nil && isPlayPath(r.URL.Path) {
 		g.opt.Play.ServeHTTP(w, r)
+		return
+	}
+	// 第三方播放器按简化路径取外挂字幕时 Emby 会 404；补上 MediaSourceId 段
+	// 再反代，本站生成的简体中文字幕才真的能被加载出来。字幕与「播放器跟不跟
+	// 302」无关，所以放在 UA 例外名单之前。
+	if g.rewriteSimpleSubtitlePath(r) {
+		g.log.Debug("字幕路径已补全", "path", r.URL.Path)
+		// 字幕请求本来就该交给 Emby，别再落到下面「播放请求未接管」的噪声日志里。
+		g.proxy.ServeHTTP(w, r)
 		return
 	}
 	if g.bypassed(r.UserAgent()) {
@@ -493,6 +507,11 @@ func strmTarget(raw string) (string, bool) {
 // looksLikePlayRequest 只认「一次播放一个」的主请求，不含 HLS 分片。
 func looksLikePlayRequest(p string) bool {
 	l := strings.ToLower(p)
+	// /Subtitles/36/Stream.srt 里也有 "stream"，但那是字幕，不是播放请求。
+	// 把它记成「未接管、转回中转」会让人以为播放链路坏了。
+	if strings.Contains(l, "/subtitles/") {
+		return false
+	}
 	return strings.Contains(l, "/stream") || strings.Contains(l, "/original") ||
 		strings.Contains(l, "/download") || strings.Contains(l, "master.m3u8")
 }

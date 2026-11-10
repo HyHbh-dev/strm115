@@ -45,7 +45,7 @@ COPY . .
 # go:embed 要求编译时目录存在，所以前端的产物必须在这之前落地
 COPY --from=web /internal/httpapi/webdist ./internal/httpapi/webdist
 
-ARG VERSION=v0.7.1
+ARG VERSION=v0.7.2
 # CGO_ENABLED=0 是关键：SQLite 用的是纯 Go 驱动（modernc.org/sqlite），
 # 不依赖 libc，才能产出真正静态的二进制、扔进最小运行镜像。
 # -trimpath 去掉本机路径，-s -w 去掉符号表和调试信息（19MB → 约 13MB）。
@@ -60,7 +60,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM alpine:3.24
 
 # VERSION 是在 build 阶段声明的 ARG，跨阶段要重新引入才能用在 LABEL 里
-ARG VERSION=v0.7.1
+ARG VERSION=v0.7.2
 # 发布到镜像仓库时补一行 org.opencontainers.image.source="https://…"，
 # 部分仓库会据此把镜像关联回代码仓库页面。
 LABEL org.opencontainers.image.title="strm115" \

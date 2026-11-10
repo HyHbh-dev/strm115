@@ -1061,7 +1061,7 @@ const backups = [
  * main.go / package.json。这里只显示后端真实回报的版本，不再假装能联网查更新：
  * 本项目没有发布通道，那个「下载并替换二进制」按钮以前点了只会弹个 toast。
  */
-const currentVersion = computed(() => session.version || 'v0.7.1')
+const currentVersion = computed(() => session.version || 'v0.7.2')
 /** 本版变更：每次跑 bump-version.py 时顺手改这一栏，用户能一眼看出换没换版本。 */
 const releaseNotes = [
   '新增版本号机制（VERSION + scripts/bump-version.py），每次修复递增',
@@ -1111,8 +1111,9 @@ const releaseNotes = [
   'v0.7.0：订阅弹窗点某一集后，下面显示该集的集名、播出日、剧照、时长、评分与剧情简介',
   'v0.7.0：移动端通知面板改为视口级浮层、版本提示不再挡住卡片、整理页表单窄屏上下堆叠',
   'v0.7.0：修移动端榜单海报空白（iOS Safari 下海报容器高度塌陷）',
-  'v0.7.0：新增「同时播放设备」上限（默认 2 台），设置页可查看并释放当前播放设备',
-]
+   'v0.7.0：新增「同时播放设备」上限（默认 2 台），设置页可查看并释放当前播放设备',
+   'v0.7.2：片源自带内嵌繁体字幕时，播放默认改用本站的简体字幕；修第三方播放器取外挂字幕 404',
+  ]
 </script>
 
 <template>

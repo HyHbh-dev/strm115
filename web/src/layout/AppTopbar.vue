@@ -188,7 +188,7 @@ onBeforeUnmount(() => {
         <div v-if="menuOpen" class="menu">
           <div class="menu-head">
             <strong>{{ session.user || 'admin' }}</strong>
-            <span class="muted small">管理员 · v{{ session.version || '0.7.1' }}</span>
+            <span class="muted small">管理员 · v{{ session.version || '0.7.2' }}</span>
           </div>
           <hr class="divider" />
           <RouterLink class="menu-item" to="/settings" @click="menuOpen = false">

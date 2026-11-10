@@ -1003,7 +1003,7 @@ TMDB 整个不可达时同样记为 `unmatched`，**不再回退到 IMDb / Cinem
 过一道「时长校验」—— 字幕最后一条对白的时间要落在片长的 0.75~1.15 倍之间，
 83 分钟的字幕撑不起 173 分钟的电影，直接换下一条（细则见 `docs/HANDOFF.md` §5.38）。
 
-**重新下载字幕 ≠ Emby 会换字幕。** 这里有三个坑，都已修掉：
+**重新下载字幕 ≠ 播放器会换字幕。** 这里有四个坑，都已修掉：
 
 1. 「补中文字幕」默认 `overwrite=false`，目录里已有任意中文字幕（`.zh/.chs/.cht/...`）
    就直接跳过，文件一个字节都没变；以前「重做全部字幕」的 `redo` 只放宽筛选、
@@ -1015,6 +1015,16 @@ TMDB 整个不可达时同样记为 `unmatched`，**不再回退到 IMDb / Cinem
    bump `.strm` 的 mtime（**只改时间戳不改内容**）、写盘后调
    `POST /Library/Media/Updated`（`UpdateType=Modified`）再做条目级 `FullRefresh`。
 3. 同目录存在两份中文字幕时 Emby 可能继续读它已经登记的那份 —— 第 2 点的改名就是为此。
+4. **片源自带内嵌繁体字幕时，播放器会优先选它。** MULTI / REMUX 片源常有一轨
+   `BTM TRAD`（`Language=chi`），和本站生成的 `.zh.srt` 一起都显示成「Chinese」；
+   PlaybackInfo 里两条都 `IsDefault=false` 且没有 `DefaultSubtitleStreamIndex`，
+   客户端按语言自动匹配时先撞上内嵌繁体轨。更隐蔽的是：Emby 交付外挂字幕的
+   正确路径必须带 MediaSourceId 这一段
+   （`/emby/Videos/{id}/{sourceID}/Subtitles/{idx}/Stream.srt`），不少第三方
+   播放器按简化路径请求，Emby 直接 404 —— 简体字幕压根没被加载。现在 302 网关
+   改写 PlaybackInfo 时会把本站简体轨设为默认、补上带 MediaSourceId 段的
+   `DeliveryUrl`、给繁体轨标注「繁体」，并把客户端的简化字幕路径补全后再反代。
+   只在本站确实生成了简体轨时才动，没有简体字幕的片子保持原样。
 
 开关在「刮削与字幕 → 字幕配置 → 写完通知 Emby」（`subtitle_config.refresh_server`，默认开）。
 整库任务在所有条目跑完后**统一刷一次**，单条重下立刻刷；没配媒体服务器时静默跳过。

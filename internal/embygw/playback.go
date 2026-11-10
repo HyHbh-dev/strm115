@@ -191,7 +191,7 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 	userID := requestUserID(resp.Request)
 	ua := resp.Request.UserAgent()
 
-	changed, withDirect := 0, 0
+	changed, withDirect, subDefault := 0, 0, -1
 	for _, s := range sources {
 		ms, ok := s.(map[string]any)
 		if !ok {
@@ -211,6 +211,14 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 		}
 		sourceID, _ := ms["Id"].(string)
 		streamURL := playbackStreamURL(m[1], sourceID, token, userID)
+		g.rememberSourceID(m[1], sourceID)
+
+		// 本站生成的简体字幕设成默认，并给出带 MediaSourceId 段的正确地址。
+		// MULTI 片源内嵌的繁体中文轨会跟它抢「Chinese」自动匹配，不指定默认
+		// 的话客户端几乎总会先撞上繁体那一条。
+		if idx := preferSimplifiedSubtitles(ms, m[1], sourceID, token, userID); idx >= 0 {
+			subDefault = idx
+		}
 
 		// 两家共有的优点：此刻就知道 pickcode，先把直链换好（取流时命中缓存），
 		// 并从 .strm 内容里读出真实容器，别让客户端按 "strm" 猜格式。
@@ -267,7 +275,7 @@ func (g *Gateway) rewritePlaybackInfo(resp *http.Response) error {
 	// 是媒体源没认出来，还是改写没生效（参考项目都这么做）。
 	g.log.Info("PlaybackInfo 改写摘要", "item", m[1], "mode", mode,
 		"sources", len(sources), "rewritten", changed, "direct", withDirect,
-		"ms", time.Since(start).Milliseconds())
+		"subDefault", subDefault, "ms", time.Since(start).Milliseconds())
 	if changed == 0 {
 		restore()
 		return nil

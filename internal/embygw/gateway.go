@@ -4,9 +4,14 @@
 // .strm 里的地址读出来、把字节拉下来、再转发给播放器。于是看一部 69GB 的
 // remux，家宽上行和 Cloudflare 隧道全被这一段中转吃满。
 //
-// 这个网关只做一件事：认出「客户端要播放某个条目」的请求，问 Emby 这个条目的
-// .strm 内容是什么，然后把客户端 302 到网盘直链。视频字节从此不经过 Emby。
-// 其余请求（登录、海报、PlaybackInfo、转码）一律原样反向代理，行为不变。
+// 这个网关做两件事：
+//  1. 改写 PlaybackInfo 响应，把 .strm 媒体源的 DirectStreamUrl 统一指向本站的
+//     302 入口（见 playback.go）——客户端发什么路径从此由我们决定，不必再
+//     逐个适配 SenPlayer / Infuse / Emby Web 各自的 stream 写法；
+//  2. 认出「客户端要播放某个条目」的请求，问 Emby 这个条目的 .strm 内容，
+//     把客户端 302 到网盘直链。视频字节从此不经过 Emby。
+//
+// 其余请求（登录、海报、转码）一律原样反向代理，行为不变。
 //
 // 三条安全边界：
 //  1. 只拦「静态直出」的请求（static=true / original / Download）。转码与 HLS
@@ -108,11 +113,22 @@ func New(opt Options) (*Gateway, error) {
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
 	}
+	origDirector := rp.Director
+	rp.Director = func(r *http.Request) {
+		origDirector(r)
+		// PlaybackInfo 的响应体要改写，压缩过就解不开；只对这个接口关压缩。
+		if rePlaybackInfo.MatchString(r.URL.Path) {
+			r.Header.Set("Accept-Encoding", "identity")
+		}
+	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		opt.Log.Warn("Emby 反代失败", "path", r.URL.Path, "err", err)
 		http.Error(w, "Emby 连不上："+err.Error(), http.StatusBadGateway)
 	}
-	return &Gateway{opt: opt, proxy: rp, log: opt.Log, warm: map[string]bool{}}, nil
+	g := &Gateway{opt: opt, proxy: rp, log: opt.Log, warm: map[string]bool{}}
+	// 从源头把播放地址统一到本站 302 入口，不再靠猜客户端发哪种 stream 路径。
+	rp.ModifyResponse = g.rewritePlaybackInfo
+	return g, nil
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -281,11 +297,28 @@ func streamItemID(r *http.Request) (string, bool) {
 	if strings.HasSuffix(lower, "/original") || strings.Contains(lower, "/original.") {
 		return m[1], true
 	}
-	q := r.URL.Query()
-	if strings.EqualFold(q.Get("static"), "true") {
+	// 参数名也要大小写不敏感：Emby 官方 API 写的是 Static=true（大写 S），
+	// SenPlayer / Infuse 照着发；只认小写 static 时它们会静默退回中转。
+	if queryTrueFold(r.URL.Query(), "static") {
 		return m[1], true
 	}
 	return "", false
+}
+
+// queryTrueFold 找「参数名忽略大小写等于 key、值忽略大小写等于 true」的项。
+// url.Values.Get 是大小写敏感的，客户端把 Static / STATIC 换种写法就会漏。
+func queryTrueFold(q url.Values, key string) bool {
+	for k, vals := range q {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		for _, v := range vals {
+			if strings.EqualFold(strings.TrimSpace(v), "true") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // embyToken 从请求里取客户端的 Emby token，取不到则用设置里的兜底 Key。

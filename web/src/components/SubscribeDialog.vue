@@ -37,7 +37,12 @@ interface Episode {
   air_date?: string
 }
 
-const props = defineProps<{ modelValue: boolean; hit: SubscribeHit | null }>()
+const props = defineProps<{
+  modelValue: boolean
+  hit: SubscribeHit | null
+  /** 调用方已经知道「订过了」时直接传 true，省得等订阅索引加载完才判断。 */
+  alreadySubscribed?: boolean
+}>()
 const emit = defineEmits<{
   'update:modelValue': [boolean]
   subscribed: [{ id: number; calendarTotal: number }]
@@ -57,6 +62,7 @@ const isTV = computed(() => props.hit?.kind === 'tv')
 const hasTMDB = computed(() => !!props.hit && props.hit.source !== 'douban' && props.hit.id > 0)
 const already = computed(() => {
   void subsVersion.value
+  if (props.alreadySubscribed) return true
   const h = props.hit
   if (!h || !hasTMDB.value) return false
   return subIdOf(isTV.value ? 'tv' : 'movie', h.id) > 0

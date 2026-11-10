@@ -42,6 +42,37 @@ type TitleHit struct {
 	Rating   float64 // 评分（10 分制）
 }
 
+// SubSeason 是「从哪一集开始订阅」选季时的一季。
+//
+// 只带季号和集数：TG 的按钮塞不下每集播出日，而且起播线本来就是个
+// 「S/E 号」而不是日期。逐集播出日由后端建订阅时自己从 TMDB 拉。
+type SubSeason struct {
+	Season   int
+	Episodes int
+	Name     string
+}
+
+// SubscribeRequest 是一次订阅。Watermark 语义和网页一致：
+// 「这一集及之前不下载」，0/0 = 从头追。
+type SubscribeRequest struct {
+	TMDbID           int
+	Kind             string // movie / tv
+	Title            string
+	Original         string
+	Year             string
+	WatermarkSeason  int
+	WatermarkEpisode int
+}
+
+// SubscribeResult 是订阅结果。Already 表示这部片已经在订阅里，
+// 不算失败 —— 机器人回一句「已经在追了」比抛错误友好。
+type SubscribeResult struct {
+	ID            int64
+	Title         string
+	CalendarTotal int // 剧集：物化出的专有日历集数
+	Already       bool
+}
+
 // Ingest 是一次「入库」的结果，用来拼回复里的入库信息。
 type Ingest struct {
 	Title   string   // 片名 / 任务名
@@ -86,6 +117,13 @@ type Deps struct {
 	// Offline 提交一条离线链接。
 	Offline func(ctx context.Context, uri, label string) (*Ingest, error)
 
+	// Subscribe 建一条订阅（剧集会顺带物化专有追更日历）。为 nil 时
+	// 所有回复里的订阅按钮都藏起来，绝不给出一个点了没反应的按钮。
+	Subscribe func(ctx context.Context, req SubscribeRequest) (*SubscribeResult, error)
+	// SubscribeSeasons 给剧集的「从哪一集开始订阅」列季集合。
+	// 为 nil 或失败时机器人降级成「直接从头追」，不让订阅卡住。
+	SubscribeSeasons func(ctx context.Context, tmdbID int) ([]SubSeason, error)
+
 	// Offset / SaveOffset 持久化 getUpdates 游标。
 	//
 	// 不存盘的话，服务重启会把「上次已经转存过的分享」当新消息再处理一遍。
@@ -125,6 +163,11 @@ type Bot struct {
 	// tmdbPicks 是「待选 TMDB 候选」，按会话存，30 分钟有效。
 	// 和资源清单分开存：这是两个阶段，选中候选后要清掉它、再进入资源清单。
 	tmdbPicks map[int64]*tmdbPick
+	// namePicks 是 /name 回的那几部片，给「查完英文名顺手订阅」用。
+	// 和 tmdbPicks 分开：/name 不该覆盖用户正在选的认片候选。
+	namePicks map[int64]*tmdbPick
+	// subPicks 是「正在选起始集」的会话，按 chat 存，30 分钟有效。
+	subPicks map[int64]*subPick
 }
 
 // msgKey 是「哪条消息」：同一个会话里可能同时躺着两次搜索，
@@ -142,6 +185,9 @@ type pick struct {
 	msgID int64           // 清单那条消息，回执要能对上
 	page  int             // 当前屏（从 0 起），翻页只改它
 	at    time.Time
+	// hit 非空表示这次搜索是「认片之后」发起的：清单底部才有
+	// 「订阅这部」按钮。降级直接按片名搜时没有 TMDB id，不能硬建订阅。
+	hit *TitleHit
 }
 
 // tmdbPick 是一次「TMDB 认片」的完整候选，等用户点片名（deep link 或降级按钮）。
@@ -154,6 +200,18 @@ type tmdbPick struct {
 	msgID int64 // 候选清单那条消息，翻页改写要用
 	page  int   // 当前屏（从 0 起）
 	at    time.Time
+}
+
+// subPick 是「点过订阅、正在挑起始集」的会话。
+//
+// 按 chat 存：一个会话同一时刻只该有一份待定订阅，重新点别的片就覆盖。
+// 电影不走它 —— 没有集可选，点一下直接建好。
+type subPick struct {
+	hit     TitleHit
+	seasons []SubSeason
+	season  int   // 当前正在挑集号的季
+	msgID   int64 // 「从哪一集开始」那条消息，选季/选集原地改写它
+	at      time.Time
 }
 
 // New 建一个 Bot。
@@ -170,6 +228,8 @@ func New(d Deps) *Bot {
 		deps: d, log: log, now: now,
 		picks: map[msgKey]*pick{}, last: map[int64]*pick{},
 		tmdbPicks: map[int64]*tmdbPick{},
+		namePicks: map[int64]*tmdbPick{},
+		subPicks:  map[int64]*subPick{},
 	}
 }
 

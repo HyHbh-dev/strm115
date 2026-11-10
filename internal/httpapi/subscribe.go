@@ -122,19 +122,55 @@ func (s *Server) handleCreateSub(w http.ResponseWriter, r *http.Request) {
 		WatermarkEpisode: body.WatermarkEpisode,
 	}
 
+	id, calendarTotal, err := s.createSubscription(ctx, &sub)
+	if err != nil {
+		var ce *subCreateError
+		switch {
+		case errors.As(err, &ce):
+			writeErr(w, ce.status, ce.err)
+		case errors.Is(err, store.ErrSubExists):
+			writeErr(w, http.StatusConflict, err)
+		default:
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "calendar_total": calendarTotal})
+}
+
+// subCreateError 给「创建订阅」的失败附一个 HTTP 状态。
+//
+// 网页和 Telegram 共用 createSubscription：网页要把它翻成 400/502，机器人
+// 只要一句人话。状态留在错误里，由 HTTP 那层自己取，机器人直接看 Error()。
+type subCreateError struct {
+	status int
+	err    error
+}
+
+func (e *subCreateError) Error() string { return e.err.Error() }
+func (e *subCreateError) Unwrap() error { return e.err }
+
+// createSubscription 是「建一条订阅」的唯一入口：网页的 POST 和 Telegram
+// 的订阅按钮都走这里，保证两边都拿到同一种校正结果和同一份专有日历。
+//
+// sub 传指针：剧集订阅会用 TMDB 就地校正标题、年份、IMDb ID 与总集数，
+// 调用方拿到的就是最终写进库的那份（回执要显示校正后的中文名）。
+// 返回 (订阅 id, 生成的日历集数, error)。日历生成失败不回滚订阅。
+func (s *Server) createSubscription(ctx context.Context, sub *store.Subscription) (int64, int, error) {
 	// 剧集：用 TMDB 校正标题、年份、IMDb ID 和总集数。
 	var show *tmdb.TVShow
-	var err error
 	if sub.MediaType == "tv" {
 		client := s.tmdbClient(ctx)
 		if client != nil {
-			show, err = client.TV(ctx, sub.TMDbID)
+			got, err := client.TV(ctx, sub.TMDbID)
 			if err != nil {
 				// 查不到就不让建：建一条判断不了集数的订阅，只会永远停在 waiting。
-				writeErr(w, http.StatusBadGateway,
-					errors.New("查不到这部剧的集数信息："+err.Error()))
-				return
+				return 0, 0, &subCreateError{
+					status: http.StatusBadGateway,
+					err:    errors.New("查不到这部剧的集数信息：" + err.Error()),
+				}
 			}
+			show = got
 			sub.Title = firstNonEmptyLocal(show.Name, sub.Title)
 			sub.OriginalTitle = firstNonEmptyLocal(show.OriginalName, sub.OriginalTitle)
 			if sub.Year == 0 {
@@ -144,29 +180,22 @@ func (s *Server) handleCreateSub(w http.ResponseWriter, r *http.Request) {
 			sub.TotalEpisodes = show.TotalEpisodes
 		}
 	}
-	if sub.Title == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("缺少片名"))
-		return
-	}
-
-	id, err := s.st.CreateSubscription(ctx, sub)
-	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrSubExists):
-			writeErr(w, http.StatusConflict, err)
-		default:
-			writeErr(w, http.StatusInternalServerError, err)
+	if strings.TrimSpace(sub.Title) == "" {
+		return 0, 0, &subCreateError{
+			status: http.StatusBadRequest, err: errors.New("缺少片名"),
 		}
-		return
 	}
 
-	// 剧集：把 TMDB 的集数集合物化成「这一部剧专属」的播放日历。
-	// 失败不回滚订阅 —— 订阅本身已经能用，日历可以由巡检或手动刷新补上。
+	id, err := s.st.CreateSubscription(ctx, *sub)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	// 复用刚才那次 TV() 的结果，不再打一遍 TMDB。
 	calendarTotal := 0
 	if sub.MediaType == "tv" && show != nil {
 		if client := s.tmdbClient(ctx); client != nil {
-			withID := sub
+			withID := *sub
 			withID.ID = id
 			n, calErr := s.materializeCalendar(ctx, withID, show, client)
 			if calErr != nil {
@@ -176,7 +205,7 @@ func (s *Server) handleCreateSub(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "calendar_total": calendarTotal})
+	return id, calendarTotal, nil
 }
 
 // handleUpdateSub 改画质、体积、库、目录、状态。

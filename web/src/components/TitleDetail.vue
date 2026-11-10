@@ -23,6 +23,7 @@ import { computed, ref, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import HPanel from '@/components/HPanel.vue'
 import HEmpty from '@/components/HEmpty.vue'
+import SubscribeDialog from '@/components/SubscribeDialog.vue'
 import { api } from '@/api/endpoints'
 import { fmtDate } from '@/utils/format'
 
@@ -89,6 +90,7 @@ const d = ref<TitleDetailData | null>(null)
 const loading = ref(false)
 const err = ref('')
 const posterBroken = ref(false)
+const subOpen = ref(false)
 
 const titleFallback = computed(() => String(props.target.q || '').trim())
 const typeFallback = computed(() => (props.target.type === 'tv' ? 'tv' : 'movie'))
@@ -123,6 +125,39 @@ function findResource() {
     q: d.value?.title || titleFallback.value,
     en: d.value?.original || '',
   })
+}
+
+/**
+ * 订阅弹窗要的是「认准的那部片」：tmdb_id 是后端拉季集、生成专有追更日历
+ * 的唯一依据，所以详情接口没认出 TMDB 时订阅按钮要禁用，不能硬建一条
+ * 永远查不到集数的订阅。
+ *
+ * 这里用结构兼容而不用 import type：SubscribeDialog 的 props 是同一份字段，
+ * 少一层 SFC 类型导出的耦合。
+ */
+const subHit = computed(() => {
+  const x = d.value
+  const tmdbId = Number(x?.tmdb_id || 0)
+  if (!tmdbId) return null
+  return {
+    id: tmdbId,
+    kind: x?.type || typeFallback.value,
+    title: x?.title || titleFallback.value,
+    original: x?.original || '',
+    year: x?.year || props.target.year || '',
+    source: 'tmdb',
+  }
+})
+const canSubscribe = computed(() => !!subHit.value)
+const subTitleTip = computed(() => {
+  if (d.value?.sub) return '已经在订阅里了，点开看追更状态'
+  if (!canSubscribe.value) return '详情没认出 TMDB ID，先在搜索里选中候选再订阅'
+  return '按 TMDB 季集集合选起始集，生成专有追更日历'
+})
+
+/** 订阅成功后重拉详情：「入库与订阅」面板里的状态和起播线要立刻跟着变。 */
+function onSubscribed() {
+  void load()
 }
 
 const tmdbURL = computed(() => {
@@ -199,8 +234,18 @@ const subText: Record<string, string> = {
             <button class="btn btn-primary" :disabled="!displayTitle" @click="findResource">
               <AppIcon name="search" :size="15" />{{ compact ? '用这部片搜资源' : '找资源' }}
             </button>
+            <button
+              class="btn"
+              :class="d?.sub ? 'btn-tertiary' : 'btn-primary'"
+              :disabled="!canSubscribe"
+              :title="subTitleTip"
+              @click="subOpen = true"
+            >
+              <AppIcon :name="d?.sub ? 'check' : 'bell'" :size="15" />
+              {{ d?.sub ? '已订阅' : '订阅追更' }}
+            </button>
             <span class="muted small">
-              {{ compact ? '把片名填回左侧搜索框，直接搜这一部' : '看完详情再决定要不要搜 TG 频道与种子站' }}
+              {{ compact ? '把片名填回左侧搜索框，或直接订阅追更' : '搜 TG 频道与种子站，或订阅后按播出日自动追更' }}
             </span>
           </div>
         </div>
@@ -278,11 +323,33 @@ const subText: Record<string, string> = {
               </div>
               <p v-if="d.sub.last_result" class="muted small tp-line">{{ d.sub.last_result }}</p>
             </template>
-            <p v-else class="muted small">还没订阅这部片，到「发现与订阅 → 订阅」里可以追更。</p>
+            <div v-else class="col" style="gap: 8px; align-items: flex-start">
+              <p class="muted small">
+                还没订阅这部片。订阅后按 TMDB 的单集播出日生成专有追更日历，到播出日自动搜资源。
+              </p>
+              <button
+                class="btn btn-sm btn-tertiary"
+                :disabled="!canSubscribe"
+                :title="subTitleTip"
+                @click="subOpen = true"
+              >
+                <AppIcon name="bell" :size="13" />订阅这部片
+              </button>
+            </div>
           </div>
         </HPanel>
       </div>
+
     </template>
+
+    <!-- 页面和搜索页右侧面板共用同一个弹窗：剧集按季集选起始集，电影直接订。
+         放在 loading 分支之外，订阅成功后重拉详情不会把弹窗中途卸载。 -->
+    <SubscribeDialog
+      v-model="subOpen"
+      :hit="subHit"
+      :already-subscribed="!!d?.sub"
+      @subscribed="onSubscribed"
+    />
   </div>
 </template>
 

@@ -129,6 +129,10 @@ func helpText() string {
 		"直接发 <code>沙丘2</code> 或 <code>沙丘2 2024</code>：\n" +
 		"先从 <b>TMDB 候选</b>里点片名认准那部（带年份、类型、评分），\n" +
 		"再在资源清单里<b>直接点种子名</b>就入库。结果多时用「下一页」翻。\n\n" +
+		"<b>4. 订阅追更</b>\n" +
+		"候选、资源清单和 /name 的回复里都有 <b>⭐ 订阅</b> 按钮：\n" +
+		"电影直接订；剧集先选「从哪一集开始」，再按 TMDB 播出日生成你的追更日历，\n" +
+		"到播出日自动搜资源，没搜到的集每天重试一次。\n\n" +
 		"<b>命令</b>\n" +
 		"/search 片名 · /name 片名（查 TMDB 英文名）· /id · /help"
 }
@@ -160,7 +164,18 @@ func (b *Bot) doNameLookup(ctx context.Context, a *api, chat int64, query string
 			"试试只发英文名，或者去掉副标题 / 季集号。")
 		return
 	}
-	b.reply(ctx, a, chat, renderNameLookup(q, hits))
+	// 查完英文名最常做的下一件事就是「把这部片订上」：给每条候选配一个
+	// 订阅按钮，序号和正文的 1./2. 对齐。没接订阅能力时 nameKeyboard 返回
+	// nil，这条回复和以前一样只是纯文本。
+	kb := nameKeyboard(hits, b.deps.Subscribe != nil)
+	msgID, err := a.send(ctx, chat, renderNameLookup(q, hits), kb)
+	if err != nil {
+		b.log.Warn("回复英文名失败", "err", err, "chat", chat)
+		return
+	}
+	if len(kb) > 0 {
+		b.putNamePick(chat, &tmdbPick{query: q, hits: hits, msgID: msgID, at: b.now()})
+	}
 }
 
 // doSearch 处理一个片名：先 TMDB 认片，再搜资源。
@@ -175,7 +190,7 @@ func (b *Bot) doSearch(ctx context.Context, a *api, chat int64, query string) {
 	if b.deps.SearchTMDB != nil && b.doTMDBCandidates(ctx, a, chat, query) {
 		return
 	}
-	b.searchResources(ctx, a, chat, query, "")
+	b.searchResources(ctx, a, chat, query, "", nil)
 }
 
 // doTMDBCandidates 问 TMDB 要候选、发一屏让人点。
@@ -196,6 +211,7 @@ func (b *Bot) doTMDBCandidates(ctx context.Context, a *api, chat int64, query st
 
 	p := &tmdbPick{query: query, hits: hits, at: b.now()}
 	v := p.view(b.botUsername())
+	v.CanSubscribe = b.deps.Subscribe != nil
 	msgID, err := a.send(ctx, chat, renderTMDB(v), tmdbKeyboard(v))
 	if err != nil {
 		b.log.Warn("发送 TMDB 候选失败，降级为直接搜资源", "err", err, "chat", chat)
@@ -229,7 +245,9 @@ func (b *Bot) selectTMDB(ctx context.Context, a *api, chat int64, n int) bool {
 		q = p.query // 两个名字都空的极端兜底
 	}
 	b.log.Info("已选定 TMDB 候选，开始搜资源", "chat", chat, "title", q, "en", h.Original)
-	b.searchResources(ctx, a, chat, q, h.Original)
+	// 把选中的那部片带进资源清单：清单底部才有「⭐ 订阅这部」，
+	// 降级直接按片名搜时手里没有 tmdb_id，不能硬建订阅。
+	b.searchResources(ctx, a, chat, q, h.Original, &h)
 	return true
 }
 
@@ -238,7 +256,7 @@ func (b *Bot) selectTMDB(ctx context.Context, a *api, chat int64, n int) bool {
 // 有 bot 用户名时，正文里的种子名本身就是 deep link，键盘只留翻页 / 取消；
 // 没用户名时降级回「每行一个结果按钮」，选定功能不丢。
 // en 是认片锁定的英文原名，为 nil / 空时后端自己按中文名去换。
-func (b *Bot) searchResources(ctx context.Context, a *api, chat int64, query, en string) {
+func (b *Bot) searchResources(ctx context.Context, a *api, chat int64, query, en string, hit *TitleHit) {
 	if b.deps.Search == nil {
 		b.reply(ctx, a, chat, "搜索功能没接上（后端没提供）。")
 		return
@@ -255,9 +273,11 @@ func (b *Bot) searchResources(ctx context.Context, a *api, chat int64, query, en
 		return
 	}
 
-	p := &pick{query: query, res: res, items: balanceOrder(res.Items)}
+	p := &pick{query: query, res: res, items: balanceOrder(res.Items), hit: hit}
 	v := p.view()
 	v.BotUsername = b.botUsername()
+	v.SubHit = hit
+	v.CanSubscribe = b.deps.Subscribe != nil
 	msgID, err := a.send(ctx, chat, renderResults(v), pageKeyboard(v))
 	if err != nil {
 		b.log.Warn("发送搜索结果失败", "err", err, "chat", chat)
@@ -287,6 +307,12 @@ func (b *Bot) onCallback(ctx context.Context, a *api, q *CallbackQuery) {
 	chat := q.Message.Chat.ID
 	msgID := q.Message.MessageID
 
+	// 订阅按钮自成一组（sb*），单独放一个文件里处理，别把已经很长的
+	// 搜索回调 switch 再撑大。返回 true 表示这条回调已经认领。
+	if b.onSubscribeCallback(ctx, a, q, chat, msgID) {
+		return
+	}
+
 	switch {
 	case strings.HasPrefix(q.Data, "tp:"):
 		// TMDB 候选翻页：页码存回状态，再按当前 bot 用户名重渲染。
@@ -299,6 +325,7 @@ func (b *Bot) onCallback(ctx context.Context, a *api, q *CallbackQuery) {
 		b.setTMDBPage(chat, page)
 		p.page = page
 		v := p.view(b.botUsername())
+		v.CanSubscribe = b.deps.Subscribe != nil
 		if err := a.edit(ctx, chat, msgID, renderTMDB(v), tmdbKeyboard(v)); err != nil {
 			b.log.Debug("TMDB 候选翻页改写失败", "err", err, "chat", chat)
 		}
@@ -352,6 +379,8 @@ func (b *Bot) onCallback(ctx context.Context, a *api, q *CallbackQuery) {
 		p.page = page
 		v := p.view()
 		v.BotUsername = b.botUsername()
+		v.SubHit = p.hit
+		v.CanSubscribe = b.deps.Subscribe != nil
 		if err := a.edit(ctx, chat, msgID, renderResults(v), pageKeyboard(v)); err != nil {
 			// 「message is not modified」也会走到这里：页码没变，不算错
 			b.log.Debug("翻页改写失败", "err", err, "chat", chat)

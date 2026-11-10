@@ -82,6 +82,10 @@ func (s *Server) botDeps() tgbot.Deps {
 		Search:     s.botSearch,
 		SearchTMDB: s.botSearchTMDB,
 		TMDBName:   s.botTMDBName,
+		// 订阅：TG 里的「⭐订阅」与网页共用 createSubscription，
+		// 剧集一样会生成专有追更日历。
+		Subscribe:        s.botSubscribe,
+		SubscribeSeasons: s.botSubSeasons,
 		// 夸克分享：走「网页 Cookie 转存进夸克网盘」，播放另由夸克TV 直链负责。
 		TransferQuark: func(ctx context.Context, url, pwd string) (*tgbot.Ingest, error) {
 			out, err := s.saveQuarkShareTo(ctx, 0, url, pwd, "")

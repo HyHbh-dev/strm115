@@ -106,6 +106,9 @@ func (s *Server) handleTitleDetail(w http.ResponseWriter, r *http.Request) {
 	tmdbID, _ := strconv.Atoi(strings.TrimSpace(q.Get("tmdb_id")))
 	mediaID, _ := strconv.ParseInt(strings.TrimSpace(q.Get("media_id")), 10, 64)
 	kind := titleKind(q.Get("type"))
+	// 调用方有没有明确给类型。搜索结果行点进详情时只有一个粗提的片名，
+	// 这时不能默认按剧集认片 —— 电影会被认成剧集，详情里的「订阅」也会订错。
+	kindExplicit := kind != ""
 	name := strings.TrimSpace(q.Get("q"))
 	year := strings.TrimSpace(q.Get("year"))
 
@@ -137,11 +140,27 @@ func (s *Server) handleTitleDetail(w http.ResponseWriter, r *http.Request) {
 	//    订阅就能走和别人完全相同的那条路。查不到就当用户没点开（404）。
 	var preloaded *tmdb.MetaDetail
 	if tmdbID <= 0 && name != "" {
-		md, err := s.catalogTMDBMeta(ctx, s.catalogTMDBClient(ctx),
-			tmdbKindOf(kind), 0, "", name, year)
-		if err == nil && md != nil && md.ID > 0 {
+		// 没给 type 就电影、剧集各认一次，谁先命中就用谁的真实类型覆盖 kind。
+		// 电影优先：资源搜索的结果绝大多数是电影，剧集名在电影库里搜不到，
+		// 自然落到第二次。明确给过 type 时仍只认那一类，行为和以前一致。
+		kinds := []string{tmdbKindOf(kind)}
+		if !kindExplicit && !hasMedia {
+			kinds = []string{"movie", "tv"}
+		}
+		for _, k := range kinds {
+			md, err := s.catalogTMDBMeta(ctx, s.catalogTMDBClient(ctx),
+				k, 0, "", name, year)
+			if err != nil || md == nil || md.ID <= 0 {
+				continue
+			}
 			tmdbID = md.ID
 			preloaded = md
+			if !kindExplicit {
+				if real := titleKind(md.Kind); real != "" {
+					kind = real
+				}
+			}
+			break
 		}
 	}
 	if tmdbID <= 0 && !hasMedia {

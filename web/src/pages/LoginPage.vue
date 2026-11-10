@@ -104,7 +104,7 @@ onMounted(async () => {
         <li><AppIcon name="local" :size="16" />海报墙按平台、类型、大小筛，点开即搜资源</li>
       </ul>
 
-      <div class="hero-foot mono">v{{ session.version || '0.5.1' }}</div>
+      <div class="hero-foot mono">v{{ session.version || '0.5.2' }}</div>
     </div>
 
     <div class="pane">

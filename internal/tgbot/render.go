@@ -38,6 +38,10 @@ type pageView struct {
 	// 放在 view 里而不是给 renderResults 加参数，是为了不改动它的签名：
 	// 现有单测直接调 renderResults(v)，不带用户名就自动走降级分支。
 	BotUsername string
+	// SubHit 是这次搜索认准的那部片（认片后才非空），CanSubscribe 由 bot
+	// 按「订阅能力有没有接上」注入。两者都满足，清单底部才有订阅按钮。
+	SubHit       *TitleHit
+	CanSubscribe bool
 }
 
 // deepLink 拼「点一下就给 bot 发 /start」的链接。
@@ -201,7 +205,13 @@ func pageKeyboard(v pageView) InlineKeyboard {
 		}
 		kb = append(kb, row)
 	}
-	return append(kb, []Button{{Text: "❌ 都不对，重新搜", CallbackData: "x"}})
+	last := []Button{{Text: "❌ 都不对，重新搜", CallbackData: "x"}}
+	// 订阅按钮和「重新搜」同一行：键盘行数不变，旧清单的翻页/取消按钮位置
+	// 也不动。有人已经搜完资源才想追更，这里是最顺手的一处入口。
+	if v.CanSubscribe && v.SubHit != nil && v.SubHit.ID > 0 {
+		last = append(last, Button{Text: "⭐ 订阅这部", CallbackData: "sbp"})
+	}
+	return append(kb, last)
 }
 
 // tmdbView 是「一屏 TMDB 认片候选」。
@@ -213,6 +223,8 @@ type tmdbView struct {
 	Page        int // 从 1 起
 	Pages       int
 	BotUsername string
+	// 没接订阅能力时按钮不出现，免得给一个点了没反应的「⭐」。
+	CanSubscribe bool
 }
 
 // renderTMDB 拼 TMDB 认片候选清单。
@@ -266,10 +278,18 @@ func tmdbKeyboard(v tmdbView) InlineKeyboard {
 	kb := make(InlineKeyboard, 0, len(v.Hits)+2)
 	for i, h := range v.Hits {
 		n := v.Start + i
-		kb = append(kb, []Button{{
+		row := []Button{{
 			Text:         fmt.Sprintf("%d. %s", n, cut(h.Title, 24)),
 			CallbackData: fmt.Sprintf("t:%d", n),
-		}})
+		}}
+		// 每部片同一行再给一个订阅：想直接追更的人不用先「选片 → 搜资源 →
+		// 再回网页订阅」。放在第二个位置，第一个按钮仍是原来的 t:N。
+		if v.CanSubscribe && h.ID > 0 {
+			row = append(row, Button{
+				Text: "⭐ 订阅", CallbackData: fmt.Sprintf("sb:%d", n),
+			})
+		}
+		kb = append(kb, row)
 	}
 	if v.Pages > 1 {
 		row := make([]Button, 0, 3)
@@ -526,4 +546,147 @@ func renderNameLookup(query string, hits []TitleHit) string {
 	}
 	b.WriteString("\n\n<i>点英文名即可复制。要入库就用 /search 片名。</i>")
 	return b.String()
+}
+
+// ==================== 订阅按钮与「从哪一集开始」 ====================
+
+// nameKeyboard 给 /name 的英文名清单配订阅按钮。
+//
+// /name 本来只回一段纯文本；查完英文名顺手订阅是很自然的下一步，所以
+// 给每条候选一个按钮，序号和正文里的 1./2. 对齐。没接订阅能力时返回 nil，
+// 老行为（只有文本）一点不变。
+func nameKeyboard(hits []TitleHit, can bool) InlineKeyboard {
+	if !can || len(hits) == 0 {
+		return nil
+	}
+	kb := make(InlineKeyboard, 0, len(hits))
+	for i, h := range hits {
+		if h.ID <= 0 {
+			continue
+		}
+		label := fmt.Sprintf("⭐ 订阅 %d", i+1)
+		if len(hits) == 1 {
+			label = "⭐ 订阅这部"
+		}
+		kb = append(kb, []Button{{
+			Text: label, CallbackData: fmt.Sprintf("sbn:%d", i+1),
+		}})
+	}
+	return kb
+}
+
+// 一季几百集时别把键盘撑爆：前 60 集够选起播线了，剩下的用「从头追」。
+const maxSubEpisodeButtons = 60
+
+func isTVHit(h TitleHit) bool { return h.Kind == "tv" || h.Kind == "series" }
+
+func subTitle(h TitleHit) string {
+	if strings.TrimSpace(h.Title) != "" {
+		return h.Title
+	}
+	return h.Original
+}
+
+func renderSubSeasons(hit TitleHit, seasons []SubSeason) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⭐ 订阅《%s》", escape(cut(subTitle(hit), 90)))
+	b.WriteString("\n\n<b>从哪一集开始订阅？</b>")
+	b.WriteString("\n起始集及之前不下载，也不会进搜索队列。")
+	if len(seasons) > 0 {
+		b.WriteString("\n点「从头追」订阅全部集，或选一季再挑集号。")
+	} else {
+		b.WriteString("\nTMDB 没给季集数，只能从头追。")
+	}
+	return b.String()
+}
+
+func subSeasonKeyboard(seasons []SubSeason) InlineKeyboard {
+	kb := InlineKeyboard{}
+	kb = append(kb, []Button{{Text: "✅ 从头追（全部集）", CallbackData: "sbg"}})
+	row := []Button{}
+	for _, s := range seasons {
+		row = append(row, Button{
+			Text:         fmt.Sprintf("S%02d · %d集", s.Season, s.Episodes),
+			CallbackData: fmt.Sprintf("sbs:%d", s.Season),
+		})
+		if len(row) == 4 {
+			kb = append(kb, row)
+			row = []Button{}
+		}
+	}
+	if len(row) > 0 {
+		kb = append(kb, row)
+	}
+	return append(kb, []Button{{Text: "❌ 取消", CallbackData: "sbx"}})
+}
+
+func renderSubEpisodes(hit TitleHit, season, episodes int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⭐ 订阅《%s》· 第 %d 季",
+		escape(cut(subTitle(hit), 90)), season)
+	b.WriteString("\n\n<b>选起始集</b>：这一集及之前不下载。")
+	if episodes > maxSubEpisodeButtons {
+		fmt.Fprintf(&b, "\n<i>这一季有 %d 集，只列出前 %d 集。</i>",
+			episodes, maxSubEpisodeButtons)
+	}
+	b.WriteString("\n订阅后按 TMDB 的单集播出日生成你的追更日历，到播出日自动搜资源。")
+	return b.String()
+}
+
+func subEpisodeKeyboard(season, episodes int) InlineKeyboard {
+	kb := InlineKeyboard{}
+	row := []Button{}
+	for e := 1; e <= episodes && e <= maxSubEpisodeButtons; e++ {
+		row = append(row, Button{
+			Text:         fmt.Sprintf("E%02d", e),
+			CallbackData: fmt.Sprintf("sbe:%d:%d", season, e),
+		})
+		if len(row) == 6 {
+			kb = append(kb, row)
+			row = []Button{}
+		}
+	}
+	if len(row) > 0 {
+		kb = append(kb, row)
+	}
+	return append(kb, []Button{
+		{Text: "◀ 返回选季", CallbackData: "sbback"},
+		{Text: "❌ 取消", CallbackData: "sbx"},
+	})
+}
+
+// renderSubResult 订阅回执。errText 非空时是失败，否则按 Already / 剧集 /
+// 电影三种情况给不同的下一句 —— 用户最关心「接下来会发生什么」。
+func renderSubResult(hit TitleHit, res *SubscribeResult, ws, we int, errText string) string {
+	name := escape(cut(subTitle(hit), 90))
+	if errText != "" {
+		return "❌ 订阅《" + name + "》失败：" + escape(cut(errText, 180)) +
+			"\n\n可以到「发现与订阅 → 订阅」里再试一次。"
+	}
+	if res == nil {
+		return "❌ 订阅《" + name + "》没有返回结果。"
+	}
+	if res.Already {
+		return "⭐ 《" + name + "》已经在订阅里了\n\n" +
+			"到「发现与订阅 → 订阅」里改画质、起播线或暂停，追更日历也在那边看。"
+	}
+	shown := escape(cut(firstNonEmptyString(res.Title, subTitle(hit)), 90))
+	if isTVHit(hit) || res.CalendarTotal > 0 {
+		start := "从头追（全部集）"
+		if ws > 0 || we > 0 {
+			start = fmt.Sprintf("从 S%02dE%02d 之后开始", ws, we)
+		}
+		return fmt.Sprintf("✅ 已订阅《%s》（剧集）\n\n%s · 已生成 %d 集专有追更日历\n"+
+			"到播出日自动搜资源，没搜到的集每天重试一次。",
+			shown, start, res.CalendarTotal)
+	}
+	return "✅ 已订阅《" + shown + "》（电影）\n\n有资源时会自动提交离线下载。"
+}
+
+// firstNonEmptyString 只给订阅回执用：/name 那条路径可能只给了英文名。
+func firstNonEmptyString(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }

@@ -66,11 +66,28 @@ func TestPick(t *testing.T) {
 		"Some.Show.S01E06.1080p",
 		"Some.Show.S02E05.1080p",
 		"Some.Show.S01.1080p.Complete", // 季包：最小闭环不认
-		"Some.Show.E05.1080p",          // 只有集号没有季号
-		"Some.Show.第5集.1080p",          // 中文集号暂不支持
+		"Some.Show.第6集.1080p",          // 中文集号对不上 E05
+		"Some.Show.第2季.第5集.1080p",      // 季号对不上 S01
+		"凡人修仙传 199-210 合集 1080p",       // 裸数字出现两个：范围，放弃
 	} {
 		if got := Pick([]resource.Item{mk(title, 5, 9)}, ep); got != nil {
 			t.Fatalf("%q 不该被选中（季集对不上）", title)
+		}
+	}
+
+	// 5b. 中文与简写集号能对上 S01E05 —— 国产剧/日番的常见写法
+	for _, title := range []string{
+		"凡人修仙传 第5集 1080p",
+		"凡人修仙传 5集 1080p",
+		"凡人修仙传 第5话 1080p",
+		"凡人修仙传 EP05 1080p",
+		"凡人修仙传 E05 1080p",
+		"凡人修仙传 EP.5.1080p",
+		"凡人修仙传 05 1080p",
+		"凡人修仙传 5 (2020) 1080p", // 年份不该被当成集号
+	} {
+		if got := Pick([]resource.Item{mk(title, 5, 9)}, ep); got == nil {
+			t.Fatalf("%q 应该能匹配 S01E05", title)
 		}
 	}
 
@@ -133,16 +150,42 @@ func TestParseEpisode(t *testing.T) {
 		s, e  int
 		ok    bool
 	}{
+		// 季集都有：最可靠，优先
 		{"Show.S02E05.1080p", 2, 5, true},
 		{"Show.S02.E05.1080p", 2, 5, true},
 		{"Show.S02 E05 1080p", 2, 5, true},
 		{"Show.s02e05", 2, 5, true},
 		{"Show.S02E05-E06", 2, 5, true},
 		{"Show.S2E5.1080p", 2, 5, true},
+		{"Show.S01E199.1080p", 1, 199, true}, // 长番集号过百
+
+		// 中文写法：国产剧/日番主流
+		{"凡人修仙传 第199集 1080p", 1, 199, true},
+		{"凡人修仙传 第5话 1080p", 1, 5, true},
+		{"凡人修仙传 第12期", 1, 12, true},
+		{"某人 第2季 第5集 1080p", 2, 5, true},
+		{"凡人修仙传 199集 1080p", 1, 199, true},
+		{"凡人修仙传 199话 1080p", 1, 199, true},
+
+		// 只有集号：季号按 S02 / 第2季 补，都没有就算第 1 季
+		{"Show.EP05.1080p", 1, 5, true},
+		{"Show.E05.1080p", 1, 5, true},
+		{"Show.EP.05.2160p", 1, 5, true},
+		{"Show.S02.EP05.1080p", 2, 5, true},
+
+		// 裸数字：只有一个候选才认
+		{"凡人修仙传 199 1080p", 1, 199, true},
+		{"凡人修仙传 199", 1, 199, true},
+		{"凡人修仙传 199 (2020) 1080p", 1, 199, true},
+		{"凡人修仙传 199 2160p WEB-DL x264 AAC 2.0", 1, 199, true},
+
+		// 认不出来：宁可漏，不要下错
 		{"Show.S02.Complete.1080p", 0, 0, false},
-		{"Show.EP05.1080p", 0, 0, false},
-		{"Show.第5集", 0, 0, false},
 		{"Show.2022.1080p", 0, 0, false},
+		{"凡人修仙传 1080p 高码版", 0, 0, false},  // 只有分辨率
+		{"凡人修仙传 199-210 合集", 0, 0, false}, // 两个候选：范围
+		{"凡人修仙传 全集 1080p", 0, 0, false},
+		{"Show.WEB-DL.DDP5.1.H264", 0, 0, false}, // 音轨/编码里的数字
 	}
 	for _, c := range cases {
 		s, e, ok := parseEpisode(c.title)

@@ -106,6 +106,19 @@ func (s *Server) materializeCalendar(ctx context.Context, sub store.Subscription
 	if err := s.st.UpsertSubscriptionEpisodes(ctx, sub.ID, out); err != nil {
 		return 0, err
 	}
+	// 总集数也跟着刷新：没有这一步，TMDB 之后从 210 集涨到 300 集时，日历
+	// 会补齐新集、下载也正常，但影视详情里的「共 N 集」和起播线滑杆的长度
+	// 会一直停在上次建订阅时的数字。show.TotalEpisodes 是全剧口径；取不到
+	// （或比实际物化的少，比如特别篇算在里面）时退回本次的行数。
+	total := show.TotalEpisodes
+	if total < len(out) {
+		total = len(out)
+	}
+	if total > 0 && total != sub.TotalEpisodes {
+		if err := s.st.SetSubscriptionTotal(ctx, sub.ID, total); err != nil {
+			s.log.Warn("订阅日历：更新总集数失败", "id", sub.ID, "err", err)
+		}
+	}
 	// 「从 S02E05 开始订阅」：起始集本身要追，只把更早的集标成已跳过，
 	// 这样周历上看得见全貌，也不会被轮询器翻出来。
 	if sub.WatermarkSeason > 0 || sub.WatermarkEpisode > 0 {

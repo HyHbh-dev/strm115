@@ -1061,7 +1061,7 @@ const backups = [
  * main.go / package.json。这里只显示后端真实回报的版本，不再假装能联网查更新：
  * 本项目没有发布通道，那个「下载并替换二进制」按钮以前点了只会弹个 toast。
  */
-const currentVersion = computed(() => session.version || 'v0.7.3')
+const currentVersion = computed(() => session.version || 'v0.7.4')
 /** 本版变更：每次跑 bump-version.py 时顺手改这一栏，用户能一眼看出换没换版本。 */
 const releaseNotes = [
   '新增版本号机制（VERSION + scripts/bump-version.py），每次修复递增',

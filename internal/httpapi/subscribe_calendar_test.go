@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -133,8 +134,8 @@ func TestSubscriptionCalendarMaterialized(t *testing.T) {
 		t.Fatalf("集数集合失败 %d: %s", rec.Code, rec.Body.String())
 	}
 	var epResp struct {
-		Seasons  []tmdb.TVSeason       `json:"seasons"`
-		Episodes []tmdb.SeasonEpisode  `json:"episodes"`
+		Seasons  []tmdb.TVSeason      `json:"seasons"`
+		Episodes []tmdb.SeasonEpisode `json:"episodes"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &epResp); err != nil {
 		t.Fatal(err)
@@ -240,4 +241,46 @@ func TestDueCalendarEpisodesDailyRetry(t *testing.T) {
 		t.Fatalf("专有日历应存在，has=%v err=%v", after, err)
 	}
 	_ = s // 保留 newServerWithStore 建出来的 Server，路由注册由其它用例覆盖
+}
+
+// TestCalendarRefreshUpdatesTotal 盯住「TMDB 后来加集，总集数要跟着涨」。
+//
+// 只补日历行、不更新 total_episodes 的话，下载是对的，但影视详情里的
+// 共 N 集和起播线滑杆会一直停在建订阅时的数字，用户会以为订阅没跟上。
+func TestCalendarRefreshUpdatesTotal(t *testing.T) {
+	s, st := newServerWithStore(t)
+	withFakeTVSeasons(t, s, st)
+	h := s.Handler()
+	cookies := loginForTest(t, h)
+	ctx := context.Background()
+
+	rec, _ := doJSON(t, h, http.MethodPost, "/api/subscriptions", map[string]any{
+		"tmdb_id": 94605, "media_type": "tv", "title": "测试剧",
+	}, cookies)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("建订阅失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟「建订阅时 TMDB 只有 2 集」的历史数据，再让它刷新一次。
+	if err := st.SetSubscriptionTotal(ctx, created.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = doJSON(t, h, http.MethodPost,
+		"/api/subscriptions/"+strconv.FormatInt(created.ID, 10)+"/calendar/refresh", nil, cookies)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("刷新日历失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	sub, err := st.GetSubscription(ctx, created.ID)
+	if err != nil || sub == nil {
+		t.Fatalf("读订阅失败：%v", err)
+	}
+	if sub.TotalEpisodes != 4 {
+		t.Fatalf("刷新后总集数应为 4，实际 %d", sub.TotalEpisodes)
+	}
 }

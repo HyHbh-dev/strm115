@@ -1010,6 +1010,27 @@ table.table {
     font-size: 16px; /* iOS 上小于 16px 会触发聚焦缩放 */
   }
 
+  /* 表单行：窄屏改成上下堆叠。
+     根因在全局 .field —— 它是「label 固定列 + 内容列」的两栏 grid，
+     label 列最少 120px，393px 下右侧内容被压成一条竖条，select/input 被裁。
+     HField.vue 只渲染这套结构、本身不带 <style>，所以在这里统一改；
+     全部只在本 media 内生效，宽屏（>900px）零变化。 */
+  .field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .field-label {
+    padding-top: 0;
+  }
+  .field-control,
+  .field-control .input,
+  .field-control .select-native,
+  .field-control .textarea,
+  .field-control input,
+  .field-control select {
+    min-width: 0;
+  }
+
   /* 面板头：标题与操作区分行；操作区内部也换行，别把 5 组控件挤成一串。
      HPanel 的 actions 容器带 inline flex:none，stylesheet 只能靠 !important 覆盖。 */
   .panel-head {
@@ -1028,13 +1049,27 @@ table.table {
   }
 
   /* 版本更新横幅：抬到移动端底部导航之上，并避让安全区。
-     main.ts 里 bottom/margin-left 用 var() 引用这两个变量，
+     main.ts 里 bottom / flex-wrap / 按钮 margin-left 都用 var() 引用这些变量，
      由这里在窄屏覆盖，inline 样式无需 !important 也能响应式生效。 */
   #app-ver-bar {
     --app-ver-bar-bottom: calc(74px + env(safe-area-inset-bottom));
+    /* 文字折行、按钮不换行：横幅保持一条细条，刷新按钮不再独占整行 */
+    --app-ver-bar-wrap: nowrap;
+    /* 窄屏才显示「×」：收起后横幅不再压在卡片上；宽屏保持隐藏 */
+    --app-ver-close-display: inline-grid;
   }
-  #app-ver-bar > button {
-    --app-ver-btn-ml: 0;
-    width: 100%;
+  #app-ver-bar > span {
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.45;
+  }
+  #app-ver-bar > button.ver-refresh {
+    width: auto;
+    flex: none;
+  }
+  /* 横幅是 fixed 浮层：内容区补一段底部留白，滚到底时最后一张卡片的
+     按钮不会被压在横幅下面；底部导航本身仍由原来的 74px 留白避让。 */
+  body.ver-bar-on .content {
+    padding-bottom: calc(150px + env(safe-area-inset-bottom));
   }
 }

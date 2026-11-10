@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"strm115/internal/playback"
 )
 
 // strmFile 造一个真实的 .strm 文件，返回它的路径。
@@ -452,5 +455,126 @@ func TestEmbyTokenFallbackOrder(t *testing.T) {
 	req.Header.Set("X-Emby-Token", "explicit")
 	if got := g.embyToken(req); got != "explicit" {
 		t.Fatalf("显式 X-Emby-Token 优先，实际 %q", got)
+	}
+}
+
+// 同时播放设备上限：默认 2 台，第 3 台起播要被明确拦下（429），
+// 释放一台后立刻能补上。HEAD 探测和 PlaybackInfo 都不该占名额。
+func TestPlaybackDeviceLimit(t *testing.T) {
+	up, _ := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv?/F1.mkv"))
+	reg := playback.New()
+	reg.SetWait(0)
+	reg.SetLimitFunc(func() int { return 2 })
+	g, err := New(Options{
+		Upstream: up.URL,
+		Playback: reg,
+		Resolve: func(context.Context, string, string) (string, error) {
+			return "https://cdn.example.com/movie.mkv", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(device string, method string, path string) int {
+		t.Helper()
+		req := httptest.NewRequest(method, path, nil)
+		if device != "" {
+			req.Header.Set("X-Emby-Authorization",
+				`MediaBrowser Client="SenPlayer", Device="iPhone", DeviceId="`+device+`", Token="tok"`)
+		} else {
+			req.Header.Set("X-Emby-Token", "tok")
+		}
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	stream := "/emby/videos/437/stream?static=true"
+	if got := request("phone", http.MethodGet, stream); got != http.StatusFound {
+		t.Fatalf("第 1 台应该 302，实际 %d", got)
+	}
+	if got := request("tv", http.MethodGet, stream); got != http.StatusFound {
+		t.Fatalf("第 2 台应该 302，实际 %d", got)
+	}
+	if got := request("pad", http.MethodGet, stream); got != http.StatusTooManyRequests {
+		t.Fatalf("第 3 台应该 429，实际 %d", got)
+	}
+	// 探测与「问怎么播」都不算设备，不能把名额吃掉。
+	request("", http.MethodHead, stream)
+	request("", http.MethodPost, "/emby/Items/437/PlaybackInfo")
+	if got := len(reg.Snapshot()); got != 2 {
+		t.Fatalf("HEAD / PlaybackInfo 不该占名额，实际 %d 台", got)
+	}
+	if !reg.Release("dev:tv") {
+		t.Fatal("释放失败")
+	}
+	if got := request("pad", http.MethodGet, stream); got != http.StatusFound {
+		t.Fatalf("释放后应该能补上，实际 %d", got)
+	}
+}
+
+// 没配上限（单测构造的默认网关）时一台都不拦，老行为零变化。
+func TestPlaybackUnlimitedByDefault(t *testing.T) {
+	up, _ := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv?/F1.mkv"))
+	g := newGateway(t, up.URL, func(context.Context, string, string) (string, error) {
+		return "https://cdn.example.com/movie.mkv", nil
+	})
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet,
+			"/emby/videos/437/stream?static=true&DeviceId=dev-"+strconv.Itoa(i), nil)
+		req.Header.Set("X-Emby-Token", "tok")
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, req)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("第 %d 台不该被拦，实际 %d", i+1, rec.Code)
+		}
+	}
+}
+
+// Emby 自己的 ffprobe 也会来拉静态流，绝不能把它算成「一台设备在看」，
+// 否则默认 2 台的上限会被探测占满，真正要播的人反而收到 429。
+func TestPlaybackIgnoresServerProbes(t *testing.T) {
+	up, _ := fakeEmby(t, strmFile(t, "http://192.168.1.10:6086/d/q/04ac73.mkv?/F1.mkv"))
+	reg := playback.New()
+	reg.SetWait(0)
+	reg.SetLimitFunc(func() int { return 2 })
+	g, err := New(Options{
+		Upstream: up.URL, Playback: reg,
+		Resolve: func(context.Context, string, string) (string, error) {
+			return "https://cdn.example.com/movie.mkv", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probes := []string{
+		"Lavf/59.16.100",           // ffprobe
+		"Emby Server/4.8",          // Emby 自己
+		"",                         // 无标识的脚本探测
+		"Mozilla/5.0 (compatible)", // 有 UA 但没 DeviceId
+	}
+	for _, ua := range probes {
+		req := httptest.NewRequest(http.MethodGet, "/emby/videos/437/stream?static=true", nil)
+		req.Header.Set("X-Emby-Token", "tok")
+		if ua != "" {
+			req.Header.Set("User-Agent", ua)
+		}
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, req)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("探测请求不该被拦（ua=%q）：%d", ua, rec.Code)
+		}
+	}
+	if got := len(reg.Snapshot()); got != 0 {
+		t.Fatalf("服务端探测不该占名额，实际 %d 台", got)
+	}
+	// 真正的客户端带 DeviceId，仍然正常计入。
+	req := httptest.NewRequest(http.MethodGet,
+		"/emby/videos/437/stream?static=true&DeviceId=ios-1", nil)
+	req.Header.Set("X-Emby-Token", "tok")
+	req.Header.Set("User-Agent", "SenPlayer/1.0.0")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || len(reg.Snapshot()) != 1 {
+		t.Fatalf("真实客户端应正常计入，code=%d devices=%d", rec.Code, len(reg.Snapshot()))
 	}
 }

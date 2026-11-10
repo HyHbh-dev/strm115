@@ -21,6 +21,7 @@ import (
 	"strm115/internal/notify"
 	"strm115/internal/offline"
 	"strm115/internal/panpool"
+	"strm115/internal/playback"
 	"strm115/internal/resource"
 	"strm115/internal/scrape"
 	"strm115/internal/store"
@@ -139,6 +140,10 @@ func New(d Deps) *Server {
 		subJobs: map[int64]*subtitleJob{},
 		start:   time.Now(),
 	}
+	// 同时播放设备上限每次起播现读设置，改完不用重启网关。
+	playback.Default.SetLimitFunc(func() int {
+		return s.playMaxDevices(context.Background())
+	})
 	// TMDB 上游是进程级配置，必须在任何业务请求进来之前设好：
 	// 电影墙、演员刮削、订阅三处都会 NewClient，启动时漏了就全走官方直连。
 	s.applyTMDBUpstream(context.Background())
@@ -353,6 +358,8 @@ func (s *Server) Handler() http.Handler {
 	// 平台清单是静态的，单独给「每平台一行」的海报墙用：一进页面就能把行标题
 	// 全画出来，不用先白等一整页 TMDB 才拿到 provider_options。
 	mux.HandleFunc("GET /api/wall/providers", s.handleWallProviders)
+	// 订阅弹窗点某一集时，把这一集的集名/播出日/简介/剧照取回来铺在下面。
+	mux.HandleFunc("GET /api/tmdb/episode", s.handleTMDBEpisode)
 	// 资源搜索的「先认片再搜」：按输入词返回 TMDB 候选，选中后才打资源源
 	mux.HandleFunc("GET /api/tmdb/search", s.handleTMDBSearch)
 
@@ -411,6 +418,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/subscriptions/{id}/run", s.handleRunSub)
 	mux.HandleFunc("GET /api/subscriptions/seasons", s.handleSubSeasons)
 	mux.HandleFunc("GET /api/subscriptions/episodes", s.handleSubEpisodes)
+	// 同时播放设备：当前列表 + 手动释放（上限写在设置 play_max_devices）。
+	mux.HandleFunc("GET /api/playback/devices", s.handlePlaybackDevices)
+	mux.HandleFunc("DELETE /api/playback/devices/{key}", s.handlePlaybackDeviceRelease)
 	mux.HandleFunc("GET /api/subscriptions/calendar", s.handleSubCalendar)
 	mux.HandleFunc("POST /api/subscriptions/{id}/calendar/refresh", s.handleRefreshSubCalendar)
 	mux.HandleFunc("GET /api/subscriptions/config", s.handleGetSubConfig)

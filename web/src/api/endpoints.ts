@@ -456,6 +456,13 @@ export const api = {
     episodes: (tmdbId: number, season?: number) =>
       http.get('/subscriptions/episodes', { tmdb_id: tmdbId, season: season || undefined }, { timeout: 30_000 }),
     /**
+     * ✅ GET /api/tmdb/episode?tmdb_id=&season=&episode=
+     * 选中某一集后铺在弹窗下方的单集详情：集名、播出日、简介、时长、剧照、评分。
+     * 返回 tmdb.SeasonEpisode：{season,episode,name,air_date,still,overview,runtime,rating}
+     */
+    episodeDetail: (tmdbId: number, season: number, episode: number) =>
+      http.get('/tmdb/episode', { tmdb_id: tmdbId, season, episode }, { timeout: 20_000 }),
+    /**
      * ✅ GET /api/subscriptions/calendar?start=&days=
      * 用户专有追更日历：只含已订阅剧集的单集播出日 + 状态，不是全局在播剧单。
      */
@@ -668,6 +675,14 @@ export const api = {
     tgBot: () => http.get('/notify/tg/bot'),
     /** ✅ PUT /api/notify/tg/bot — 改白名单；reset=true 解绑全部 */
     saveTgBot: (body: { chat_ids?: string; reset?: boolean }) => http.put('/notify/tg/bot', body),
+  },
+
+  /* ---------------- 同时播放设备 ---------------- */
+  playback: {
+    /** ✅ GET /api/playback/devices —— 上限、TTL、当前设备列表 */
+    devices: () => http.get('/playback/devices'),
+    /** ✅ DELETE /api/playback/devices/{key} —— 手动释放一台设备 */
+    release: (key: string) => http.del(`/playback/devices/${encodeURIComponent(key)}`),
   },
 
   /* ---------------- 站内通知中心（右上角铃铛） ---------------- */

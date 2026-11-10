@@ -24,8 +24,10 @@ package embygw
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -34,6 +36,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"strm115/internal/playback"
 )
 
 // Resolver 把 .strm 里的 id 换成网盘直链。实现方是 play.Proxy。
@@ -62,6 +66,9 @@ type Options struct {
 	// MapLocal 把「媒体服务器看到的路径」换成本机路径。
 	// 两边挂同一个卷时是恒等映射；服务器在别的机器上时由 server_path_from/to 描述。
 	MapLocal func(string) string
+	// Playback 记「此刻有几台设备在看」。不传就用进程级默认表，
+	// 没配上限时等价于不限流，单测构造的网关因此零影响。
+	Playback *playback.Registry
 	Log      *slog.Logger
 }
 
@@ -144,6 +151,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 把客户端真正访问的协议 / 域名记进 context：ReverseProxy 会把出站请求的
 	// Host 改成上游 Emby，ModifyResponse 里已经读不到原始值了。
 	r = withClientBase(r)
+	// 起播名额检查放在最前面：静态直出和 /d/ 直链都要算「一台设备在看」，
+	// 而 PlaybackInfo、海报、转码、HEAD 探测都不算。
+	if !g.allowPlayback(w, r) {
+		return
+	}
 	// 播放代理优先：同一个端口既要能 302 直链，也要能当 Emby 入口用。
 	if g.opt.Play != nil && isPlayPath(r.URL.Path) {
 		g.opt.Play.ServeHTTP(w, r)
@@ -490,6 +502,142 @@ func shortQuery(q string) string {
 		return q[:160]
 	}
 	return q
+}
+
+// reAuthDeviceID / reAuthDeviceName 从 MediaBrowser 复合头里取设备标识。
+// 第三方客户端（SenPlayer / Infuse / Emby iOS）有时不带 X-Emby-Token，
+// 只把一串 MediaBrowser Client="…", Device="…", DeviceId="…", Token="…"
+// 塞在 X-Emby-Authorization 里。
+var reAuthDeviceID = regexp.MustCompile(`(?i)DeviceId\s*=\s*"([^"]+)"`)
+var reAuthDeviceName = regexp.MustCompile(`(?i)Device\s*=\s*"([^"]+)"`)
+var reAuthClient = regexp.MustCompile(`(?i)Client\s*=\s*"([^"]+)"`)
+
+// allowPlayback 占一个「同时播放设备」名额；满了返回 false 并已写好响应。
+//
+// 只拦 GET 的主播放请求：HEAD 是探测/预热，POST PlaybackInfo 只是问怎么播，
+// HLS 分片与转码没有静态直出参数，都不会走到这里来占坑。
+func (g *Gateway) allowPlayback(w http.ResponseWriter, r *http.Request) bool {
+	reg := g.opt.Playback
+	if reg == nil {
+		reg = playback.Default
+	}
+	if reg == nil || r.Method != http.MethodGet {
+		return true
+	}
+	ua := r.UserAgent()
+	dev := deviceIDOf(r)
+	// Emby 服务端会自己来拉流做 ffprobe（UA 是 ffmpeg / libav，且不带
+	// DeviceId），那不是「一台设备在看」，占掉名额会把真正要播的人拦在门外。
+	if isServerUA(ua) {
+		return true
+	}
+	var itemID string
+	if strings.HasPrefix(r.URL.Path, "/d/") {
+		// 直连模式：只认有 UA 的播放器，空 UA 的探测一律不算。
+		if ua == "" {
+			return true
+		}
+	} else {
+		id, ok := streamItemID(r)
+		if !ok {
+			return true
+		}
+		// 统一 302 入口：Emby / SenPlayer / Infuse 起播都会带 DeviceId。
+		// 没带的宁可不统计，也不能把 ffprobe 当成一个人。
+		if dev == "" {
+			return true
+		}
+		itemID = id
+	}
+	ip := clientIP(r)
+	err := reg.Acquire(r.Context(), playback.Session{
+		Key:    playback.KeyFor(dev, ip, ua),
+		Label:  deviceLabel(r, ua),
+		IP:     ip,
+		UA:     ua,
+		ItemID: itemID,
+	})
+	if errors.Is(err, playback.ErrFull) {
+		limit := reg.Limit()
+		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprintf(w,
+			"同时播放设备已达上限（%d 台），请稍后再试；也可到「系统配置 → 播放直连」调高上限或释放旧设备。", limit)
+		g.log.Warn("同时播放设备已达上限", "limit", limit,
+			"path", r.URL.Path, "ip", ip, "ua", uaLabel(ua))
+		return false
+	}
+	// ctx 取消之类的异常不该让播放卡死，最差就是这一台没被统计。
+	return true
+}
+
+func deviceIDOf(r *http.Request) string {
+	for _, v := range []string{
+		queryFold(r, "DeviceId"),
+		r.Header.Get("X-Emby-Device-Id"),
+	} {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	for _, v := range []string{
+		r.Header.Get("X-Emby-Authorization"),
+		r.Header.Get("Authorization"),
+	} {
+		if m := reAuthDeviceID.FindStringSubmatch(v); len(m) == 2 && m[1] != "" {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+func deviceLabel(r *http.Request, ua string) string {
+	for _, v := range []string{
+		r.Header.Get("X-Emby-Authorization"),
+		r.Header.Get("Authorization"),
+	} {
+		if m := reAuthDeviceName.FindStringSubmatch(v); len(m) == 2 && m[1] != "" {
+			return m[1]
+		}
+		if m := reAuthClient.FindStringSubmatch(v); len(m) == 2 && m[1] != "" {
+			return m[1]
+		}
+	}
+	if d := queryFold(r, "DeviceId"); d != "" {
+		return d
+	}
+	return uaLabel(ua)
+}
+
+func clientIP(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if i := strings.IndexByte(v, ','); i >= 0 {
+			v = v[:i]
+		}
+		return strings.TrimSpace(v)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// isServerUA 过滤服务端自己的探测（ffprobe / 预热 / 脚本），它们不该占设备名额。
+func isServerUA(ua string) bool {
+	l := strings.ToLower(ua)
+	for _, k := range []string{
+		"emby server", "ffmpeg", "libav", "lavf", "go-http-client",
+		"python-urllib", "python-requests", "curl/",
+	} {
+		if strings.Contains(l, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func uaLabel(ua string) string {

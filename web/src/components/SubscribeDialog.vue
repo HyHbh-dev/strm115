@@ -36,6 +36,17 @@ interface Episode {
   name?: string
   air_date?: string
 }
+/** 单集详情（GET /api/tmdb/episode），字段与后端 tmdb.SeasonEpisode 对齐。 */
+interface EpisodeDetail {
+  season: number
+  episode: number
+  name: string
+  air_date: string
+  still: string
+  overview: string
+  runtime: number
+  rating: number
+}
 
 const props = defineProps<{
   modelValue: boolean
@@ -57,6 +68,14 @@ const fromBeginning = ref(true)
 const season = ref(1)
 const episode = ref(1)
 const seasonLoading = ref(false)
+
+// 选中集后铺在弹窗下方的单集详情。请求序号用来防竞态：快速连点 E208→E209 时，
+// 只认最后一次请求的结果，先发的慢响应不许覆盖后发的结果。
+const epDetail = ref<EpisodeDetail | null>(null)
+const epLoading = ref(false)
+const epError = ref(false)
+const epStillFailed = ref(false)
+let epReqSeq = 0
 
 // 一季可能上百集：按 50 集分一段展示，别让一个固定高度的滚动网格吞掉后面几十集。
 const EP_SEGMENT = 50
@@ -199,6 +218,90 @@ function episodeCountOf(s: number): number {
 function airDateOf(e: number): string {
   return episodes.value.find((x) => x.episode === e)?.air_date || ''
 }
+
+const showEpPanel = computed(
+  () => isTV.value && hasTMDB.value && !fromBeginning.value,
+)
+const epCode = computed(
+  () => `S${String(season.value).padStart(2, '0')}E${String(episode.value).padStart(2, '0')}`,
+)
+// 详情字段优先取接口返回值，缺的回落到本地逐集清单：接口 404/400 整块降级时也靠它。
+const localEp = computed(() => episodes.value.find((x) => x.episode === episode.value) || null)
+const epTitle = computed(
+  () => epDetail.value?.name || localEp.value?.name || `第 ${episode.value} 集`,
+)
+const epAirDate = computed(() => epDetail.value?.air_date || localEp.value?.air_date || '')
+const epStill = computed(() => epDetail.value?.still || '')
+const epOverview = computed(() => epDetail.value?.overview || '')
+const epRuntime = computed(() => epDetail.value?.runtime || 0)
+const epRating = computed(() => epDetail.value?.rating || 0)
+const epOverviewPlaceholder = computed(() =>
+  epError.value ? '这一集的详情暂时读不到，已按集号与播出日显示' : 'TMDB 还没收录这一集的简介',
+)
+
+function onStillError() {
+  epStillFailed.value = true
+}
+
+function resetEpDetail() {
+  // 序号一加，在途的旧请求回调就不会再写状态（防快速连点竞态）。
+  epReqSeq++
+  epDetail.value = null
+  epLoading.value = false
+  epError.value = false
+  epStillFailed.value = false
+}
+
+async function fetchEpisodeDetail(tmdbId: number, s: number, e: number) {
+  const seq = ++epReqSeq
+  epDetail.value = null
+  epLoading.value = true
+  epError.value = false
+  epStillFailed.value = false
+  try {
+    const d: any = await api.subscriptions.episodeDetail(tmdbId, s, e)
+    if (seq !== epReqSeq) return // 已被更晚的选择取代
+    epDetail.value = {
+      season: Number(d?.season ?? s),
+      episode: Number(d?.episode ?? e),
+      name: String(d?.name ?? ''),
+      air_date: String(d?.air_date ?? ''),
+      still: String(d?.still ?? ''),
+      overview: String(d?.overview ?? ''),
+      runtime: Number(d?.runtime ?? 0),
+      rating: Number(d?.rating ?? 0),
+    }
+  } catch {
+    if (seq !== epReqSeq) return
+    // 404（没这一集）/ 400（没配 TMDB Key）/ 网络失败：只置一个降级标记，
+    // 面板照常用本地集信息渲染，不显示红字、不挡确认按钮。
+    epError.value = true
+    epDetail.value = null
+  } finally {
+    if (seq === epReqSeq) epLoading.value = false
+  }
+}
+
+// 只在「剧集 + 有 TMDB id + 选了具体集 + 弹窗打开」时拉详情；
+// 从头追、电影、弹窗关闭都不拉，并顺手把状态清干净。
+watch(
+  [season, episode, () => props.hit?.id, isTV, hasTMDB, fromBeginning, () => props.modelValue],
+  () => {
+    const shouldFetch =
+      props.modelValue &&
+      isTV.value &&
+      hasTMDB.value &&
+      !fromBeginning.value &&
+      season.value > 0 &&
+      episode.value > 0
+    if (!shouldFetch) {
+      resetEpDetail()
+      return
+    }
+    void fetchEpisodeDetail(props.hit!.id, season.value, episode.value)
+  },
+  { immediate: true },
+)
 
 async function submit() {
   const h = props.hit
@@ -355,15 +458,50 @@ watch(
       </template>
 
       <div class="sub-foot">
-        <div>
-          <strong class="small">{{ startLabel }}</strong>
-          <p class="muted small">
-            {{ isTV ? '订阅后会按每集播出日搜资源；没搜到的集每天重试一次。' : '电影有资源就自动提交离线。' }}
-          </p>
+        <div class="sub-foot-head">
+          <div class="sub-foot-copy">
+            <strong class="small">{{ startLabel }}</strong>
+            <p class="muted small">
+              {{ isTV ? '订阅后会按每集播出日搜资源；没搜到的集每天重试一次。' : '电影有资源就自动提交离线。' }}
+            </p>
+          </div>
+          <button class="btn btn-primary" :disabled="saving || loading || (isTV && !fromBeginning && !episodeCountOf(season))" @click="submit">
+            {{ saving ? '订阅中…' : '确认订阅' }}
+          </button>
         </div>
-        <button class="btn btn-primary" :disabled="saving || loading || (isTV && !fromBeginning && !episodeCountOf(season))" @click="submit">
-          {{ saving ? '订阅中…' : '确认订阅' }}
-        </button>
+
+        <!-- 选了具体集才展开详情；与「确认订阅」同处一张卡片，按钮始终在上方可见。 -->
+        <div v-if="showEpPanel" class="ep-detail">
+          <template v-if="epLoading">
+            <div class="ep-detail-loading muted small">加载中…</div>
+            <div class="ep-sk-line"></div>
+            <div class="ep-sk-line short"></div>
+          </template>
+          <template v-else>
+            <div class="ep-detail-head">
+              <img
+                v-if="epStill && !epStillFailed"
+                class="ep-detail-still"
+                :src="epStill"
+                :alt="epTitle"
+                loading="lazy"
+                @error="onStillError"
+              />
+              <div class="ep-detail-info">
+                <strong class="ep-detail-title">{{ epTitle }}</strong>
+                <div class="ep-detail-meta muted small">
+                  <span class="ep-code">{{ epCode }}</span>
+                  <span v-if="epAirDate">· 播出 {{ epAirDate }}</span>
+                  <span v-if="epRuntime > 0">· {{ epRuntime }} 分钟</span>
+                  <span v-if="epRating > 0">· ★ {{ epRating.toFixed(1) }}</span>
+                </div>
+              </div>
+            </div>
+            <p class="ep-detail-overview" :class="{ 'is-placeholder': !epOverview }">
+              {{ epOverview || epOverviewPlaceholder }}
+            </p>
+          </template>
+        </div>
       </div>
       <p v-if="error" class="sub-err">{{ error }}</p>
     </div>
@@ -390,10 +528,100 @@ watch(
 }
 .sub-foot {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
+}
+.sub-foot-head {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+.sub-foot-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+/* 单集详情：HModal 的 .modal-body 已经是主滚动容器，这里不做 max-height / overflow，
+   避免把「确认订阅」按钮挤进双层滚动里看不见。 */
+.ep-detail {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.ep-detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ep-detail-still {
+  display: block;
+  flex: 0 0 auto;
+  width: 108px;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  object-fit: cover;
+}
+.ep-detail-info {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ep-detail-title {
+  color: var(--foreground);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.ep-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  line-height: 1.5;
+}
+.ep-code {
+  color: var(--accent);
+  font-weight: 600;
+}
+.ep-detail-overview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  overflow: hidden;
+  margin: 10px 0 0;
+  color: var(--foreground);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.ep-detail-overview.is-placeholder {
+  color: var(--muted);
+  font-style: italic;
+}
+.ep-detail-loading {
+  margin-bottom: 8px;
+}
+.ep-sk-line {
+  height: 12px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--surface-secondary) 20%,
+    var(--surface-tertiary) 40%,
+    var(--surface-secondary) 60%
+  );
+  background-size: 200% 100%;
+  animation: ep-sk 1.2s ease-in-out infinite;
+}
+.ep-sk-line.short {
+  width: 60%;
+}
+@keyframes ep-sk {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 .ep-grid {
   display: grid;
@@ -442,6 +670,13 @@ watch(
 @media (max-width: 560px) {
   .ep-grid {
     grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  }
+  .ep-detail-still {
+    width: 84px;
+  }
+  .ep-detail-overview {
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
   }
 }
 </style>

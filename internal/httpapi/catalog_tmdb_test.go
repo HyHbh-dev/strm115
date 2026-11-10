@@ -33,6 +33,9 @@ func fakeCatalogTMDB(t *testing.T, s *Server, st *store.Store, base string) *htt
 			_, _ = io.WriteString(w, `{"id":693134,"title":"沙丘2","original_title":"Dune: Part Two","release_date":"2024-02-27","vote_average":8.2,"runtime":166,"overview":"保罗的旅程","poster_path":"/dune.jpg","backdrop_path":"/dune-bg.jpg","genres":[{"name":"科幻"}],"external_ids":{"imdb_id":"tt15239678"}}`)
 		case p == "/tv/1396":
 			_, _ = io.WriteString(w, `{"id":1396,"name":"绝命毒师","original_name":"Breaking Bad","first_air_date":"2008-01-20","vote_average":9.5,"episode_run_time":[49],"overview":"化学老师的转变","poster_path":"/bb.jpg","genres":[{"name":"剧情"}],"seasons":[{"season_number":1}],"external_ids":{"imdb_id":"tt0903747"}}`)
+		case p == "/tv/1396/season/1":
+			// 订阅弹窗点某一集时的单集详情也走这个假上游。
+			_, _ = io.WriteString(w, `{"episodes":[{"episode_number":1,"name":"试播集","air_date":"2008-01-20","still_path":"/bb-still.jpg","overview":"一个化学老师走上了不归路。","runtime":47,"vote_average":8.4}]}`)
 		case p == "/find/tt15239678":
 			_, _ = io.WriteString(w, `{"movie_results":[{"id":693134}],"tv_results":[]}`)
 		case p == "/search/tv":

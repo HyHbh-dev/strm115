@@ -195,4 +195,39 @@ function onItemClick(n: NotificationItem) {
   font-size: 12.5px;
   color: var(--muted);
 }
+
+/* 窄屏：改成视口级定位。
+   宽屏仍相对 .notif-wrap（absolute + right:0），定位父级是那个很窄的铃铛
+   图标容器；393px 下 340px 宽的面板向左展开会顶出视口左边界，铃铛徽章和
+   面板左半边被裁掉、右侧反而留白。fixed + left/right 让它吃满视口宽度，
+   上面那套宽屏规则一字不改，DOM 结构也不变（点击外部关闭 / hover 逻辑照旧）。*/
+@media (max-width: 900px) {
+  .notif-panel {
+    position: fixed;
+    top: calc(62px + env(safe-area-inset-top));
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    /* 顶栏 62 + 底部导航 74 + 横幅余量 48 + 留白 24。
+       多留的一段把面板底部停在版本横幅上方，避免被更高层级的浮层压住。 */
+    max-height: calc(
+      100dvh - 62px - 74px - 48px - 24px
+      - env(safe-area-inset-top) - env(safe-area-inset-bottom)
+    );
+    display: flex;
+    flex-direction: column;
+  }
+  .notif-head {
+    flex: none;
+  }
+  .notif-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+}
 </style>

@@ -781,6 +781,7 @@ onMounted(async () => {
     readProxyStatus(s)
     // 来源清单和上面共用这次 settings() 的结果，不再多发一次 /api/settings
     void loadCfg(s)
+    void loadPlayDevices()
   } catch {
     /* 读不到设置不阻塞页面 */
   }
@@ -806,6 +807,8 @@ const emby = ref({
   gwOn: false,
   gwBypass: '',
   gwMode: 'redirect',
+  // 同时允许几台设备播放，默认 2；0 = 不限制。
+  gwMaxDevices: '2',
   gwRunning: false,
   gwAddr: '',
 })
@@ -849,6 +852,7 @@ async function loadEmby() {
     const on = String(cfg?.emby_gateway_on ?? '').toLowerCase()
     emby.value.gwOn = ['1', 'on', 'true', 'yes'].includes(on)
     emby.value.gwBypass = cfg?.emby_gateway_bypass || ''
+    emby.value.gwMaxDevices = String(cfg?.play_max_devices ?? '2')
     emby.value.gwMode = ['redirect', 'hybrid', 'direct'].includes(String(cfg?.emby_gateway_mode || ''))
       ? String(cfg?.emby_gateway_mode)
       : 'redirect'
@@ -943,12 +947,16 @@ async function connectEmby() {
 async function saveGateway() {
   embyBusy.value = true
   try {
+    // 空输入按默认 2 处理；0 是「不限制」的合法值，别被 || 吃掉。
+    const rawMax = String(emby.value.gwMaxDevices ?? '').trim()
+    const maxDevices = rawMax === '' ? 2 : Math.max(0, Math.min(16, Number(rawMax) || 0))
     await api.config.saveSettings({
       emby_gateway_on: emby.value.gwOn ? '1' : '0',
       emby_gateway_bypass: emby.value.gwBypass.trim(),
       emby_gateway_mode: emby.value.gwMode,
+      play_max_devices: String(maxDevices),
     })
-    await loadEmby()
+    await Promise.all([loadEmby(), loadPlayDevices()])
     toast.success(
       emby.value.gwRunning ? '302 网关已接管播放' : '302 网关未启用',
       emby.value.gwRunning
@@ -960,6 +968,52 @@ async function saveGateway() {
   } finally {
     embyBusy.value = false
   }
+}
+
+/* ---- 同时播放设备：302 直连看不到「播放结束」，按最后起播时间算活跃 ---- */
+interface PlayDevice {
+  key: string
+  label: string
+  ip: string
+  ua: string
+  item_id: string
+  started_at: string
+  last_seen: string
+}
+const playDevices = ref<PlayDevice[]>([])
+const playLimit = ref(2)
+const playTTL = ref(45)
+const playBusy = ref(false)
+
+async function loadPlayDevices() {
+  try {
+    const r: any = await api.playback.devices()
+    playDevices.value = Array.isArray(r?.devices) ? r.devices : []
+    playLimit.value = Number(r?.limit ?? 2)
+    playTTL.value = Number(r?.ttl_minutes ?? 45)
+  } catch {
+    /* 读不到不影响其它设置 */
+  }
+}
+
+async function releaseDevice(key: string) {
+  playBusy.value = true
+  try {
+    await api.playback.release(key)
+    await loadPlayDevices()
+    toast.success('已释放', '这台设备的播放名额已经还回去了')
+  } catch (err: any) {
+    toast.warning('释放失败', err?.message || '')
+  } finally {
+    playBusy.value = false
+  }
+}
+
+function shortTime(v: string): string {
+  if (!v) return '—'
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
 async function scanEmby(libId?: string) {
@@ -1007,7 +1061,7 @@ const backups = [
  * main.go / package.json。这里只显示后端真实回报的版本，不再假装能联网查更新：
  * 本项目没有发布通道，那个「下载并替换二进制」按钮以前点了只会弹个 toast。
  */
-const currentVersion = computed(() => session.version || 'v0.6.1')
+const currentVersion = computed(() => session.version || 'v0.7.1')
 /** 本版变更：每次跑 bump-version.py 时顺手改这一栏，用户能一眼看出换没换版本。 */
 const releaseNotes = [
   '新增版本号机制（VERSION + scripts/bump-version.py），每次修复递增',
@@ -1054,6 +1108,10 @@ const releaseNotes = [
   'v0.6.0：订阅选集每 50 集一段（网页弹窗 + TG 键盘），79 集长剧可跳到集号，E61 之后也能选',
   'v0.6.1：换路由器/换网段也能自动跟随：用新 IP 打开一次后台，播放地址与全部 .strm 自动改写（原来只认同网段）',
   'v0.6.1：引导不再用 .env 里的旧 PLAY_DOMAIN 覆盖已有播放地址；要强制改可设 PLAY_DOMAIN_FORCE=1',
+  'v0.7.0：订阅弹窗点某一集后，下面显示该集的集名、播出日、剧照、时长、评分与剧情简介',
+  'v0.7.0：移动端通知面板改为视口级浮层、版本提示不再挡住卡片、整理页表单窄屏上下堆叠',
+  'v0.7.0：修移动端榜单海报空白（iOS Safari 下海报容器高度塌陷）',
+  'v0.7.0：新增「同时播放设备」上限（默认 2 台），设置页可查看并释放当前播放设备',
 ]
 </script>
 
@@ -1654,6 +1712,73 @@ const releaseNotes = [
             {{ embyBusy ? '保存中…' : '保存并应用' }}
           </button>
         </template>
+      </HPanel>
+
+      <HPanel
+        title="同时播放设备"
+        :desc="`当前 ${playDevices.length} 台 · 上限 ${playLimit === 0 ? '不限制' : playLimit + ' 台'}`"
+      >
+        <template #actions>
+          <button class="btn btn-sm btn-tertiary" :disabled="playBusy" @click="loadPlayDevices">
+            <AppIcon name="refresh" :size="13" />刷新
+          </button>
+        </template>
+        <HField
+          label="同时播放上限"
+          hint="同一个网盘账号同时开太多路容易被风控。0 = 不限制；改完点上面「保存并应用」"
+        >
+          <div class="row wrap" style="gap: 8px; align-items: center">
+            <input
+              v-model="emby.gwMaxDevices"
+              class="input"
+              type="number"
+              min="0"
+              max="16"
+              style="max-width: 110px"
+            />
+            <span class="muted small">台设备（默认 2，最多 16）</span>
+          </div>
+        </HField>
+        <p class="muted small" style="margin: 0 0 12px; line-height: 1.7">
+          302 直连后视频字节不经过本机，服务端收不到「播放结束」，所以按最后一次起播后
+          {{ playTTL }} 分钟没活动自动释放名额。超过上限时新设备会先等最多 8 秒，
+          仍满就收到一条明确提示；也可以在这里手动释放旧设备。
+        </p>
+        <div v-if="playDevices.length" class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>设备</th>
+                <th>地址</th>
+                <th>条目</th>
+                <th>开始</th>
+                <th class="num">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="d in playDevices" :key="d.key">
+                <td>
+                  <strong>{{ d.label || '未命名设备' }}</strong>
+                  <div class="muted small mono">{{ d.key }}</div>
+                </td>
+                <td class="mono small muted">{{ d.ip || '—' }}</td>
+                <td class="mono small muted">{{ d.item_id || '—' }}</td>
+                <td class="small muted">{{ shortTime(d.started_at) }}</td>
+                <td class="num">
+                  <button
+                    class="btn btn-sm btn-ghost"
+                    :disabled="playBusy"
+                    title="释放这台设备的播放名额"
+                    @click="releaseDevice(d.key)"
+                  >
+                    <AppIcon name="trash" :size="13" />
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else class="muted small" style="margin: 0">当前没有设备在播放。</p>
       </HPanel>
 
       <p class="muted small" style="margin: 0; line-height: 1.7">

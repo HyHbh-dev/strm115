@@ -1019,8 +1019,10 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 .rule-card {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 10px 12px;
@@ -1028,7 +1030,8 @@ onMounted(async () => {
 }
 .rule-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0,…) 而不是裸 1fr：列的最小尺寸不再被 select 的 min-content 撑开 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 14px;
 }
 .rule-field {
@@ -1037,9 +1040,22 @@ onMounted(async () => {
   gap: 4px;
   min-width: 0;
 }
-@media (max-width: 720px) {
+/* 与全局移动端断点一致：900px 起就单列，别等 720px 才换行，
+   否则 393px 下 HField 的内容列已被压成竖条、规则卡还挤在两列里。 */
+@media (max-width: 900px) {
   .rule-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* 单列后字段吃满卡片宽；「输入框 + 选择按钮」那行允许收缩换行，
+     select/input 不再被裁切，也不会把卡片撑出横向滚动 */
+  .rule-field,
+  .rule-field .row,
+  .rule-field .input,
+  .rule-field .select-native {
+    min-width: 0;
+  }
+  .rule-field .row {
+    flex-wrap: wrap;
   }
 }
 

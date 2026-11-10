@@ -151,7 +151,10 @@ function hueOf(s: string) {
 }
 function phStyle(it: WallItem) {
   const h = hueOf(it.name || 'x')
-  return { background: `linear-gradient(160deg, hsl(${h} 52% 40%), hsl(${h + 24} 48% 20%))` }
+  // 用逗号写法（旧版 iOS Safari 不认 CSS Color 4 的空格写法，整条渐变会失效，
+  // 那样浅色主题下白字会糊在浅底上、占位「看不见」）。渐变本身始终是深色，
+  // 配白色片名文字，明暗主题下都与卡片背景区分得开。
+  return { background: `linear-gradient(160deg, hsl(${h}, 52%, 40%), hsl(${h + 24}, 48%, 20%))` }
 }
 
 /* ---------------- 详情抽屉 ---------------- */
@@ -621,6 +624,43 @@ onMounted(() => {
   color: #fff;
   font-size: 10.5px;
   font-weight: 600;
+}
+
+/* ==================== 移动端海报墙（≤900px） ====================
+   根因：.poster 是 <button>，iOS Safari 会给 button 的子元素套一层匿名布局盒，
+   纯 aspect-ratio: 2/3 在这种盒里算不出高度 → .poster-art 塌到 0 高。
+   于是绝对定位的 <img> 与 .ph 占位都没有可依撑的容器（看不见），
+   loading="lazy" 的图也因 0 高永不被判定进视口，最后只剩两列文字。
+   这里不依赖 button 的布局：固定两列、显式拉满宽度，改用 ::before 的
+   padding-top:150% 撑出确定高度（百分比按列宽算，天然是 2/3 的海报比例）。
+   全部只在窄屏生效，宽屏仍走 ui.css 原本的 aspect-ratio，外观零变化。 */
+@media (max-width: 900px) {
+  /* 393px 下稳定两列；minmax(0,1fr) 允许列收缩，杜绝横向溢出 */
+  .poster-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 10px;
+  }
+  .poster {
+    align-items: stretch;
+  }
+  .poster-art {
+    width: 100%;
+    min-width: 0;
+    align-self: stretch;
+    aspect-ratio: auto; /* 关掉在 button 里失效的比例，高度交给 ::before */
+    height: auto;
+  }
+  .poster-art::before {
+    content: '';
+    display: block;
+    padding-top: 150%; /* 高 = 宽 × 1.5，等价 2/3 竖版海报 */
+  }
+  /* 图片确实拿不到时，占位要清晰可辨：加一圈主题描边 + 更实的文字阴影，
+     白色片名压在深色渐变上，明暗主题下都不会糊成一片空白。 */
+  .poster-art .ph {
+    box-shadow: inset 0 0 0 1px var(--border);
+    text-shadow: 0 1px 6px rgb(0 0 0 / 0.55);
+  }
 }
 
 .drawer-overlay {

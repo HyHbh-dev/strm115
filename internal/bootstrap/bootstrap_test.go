@@ -360,3 +360,56 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("按字符截断失败: %q", got)
 	}
 }
+
+// choosePlayDomain：已有播放地址不能被 .env 里的旧值覆盖回去，
+// 否则「换路由器自愈 → 重启 → 又变回旧 IP」会无限循环。
+func TestChoosePlayDomain(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      Config
+		cur      string
+		want     string
+		wantWarn bool
+	}{
+		{
+			name: "首次安装用 env",
+			cfg:  Config{PlayDomain: "http://192.168.1.10:6086"},
+			want: "http://192.168.1.10:6086",
+		},
+		{
+			name:     "已有值优先，env 不同时提醒",
+			cfg:      Config{PlayDomain: "http://192.168.50.3:6086"},
+			cur:      "http://192.168.1.13:6086",
+			want:     "",
+			wantWarn: true,
+		},
+		{
+			name: "值相同不写不提醒",
+			cfg:  Config{PlayDomain: "http://192.168.1.13:6086"},
+			cur:  "http://192.168.1.13:6086",
+		},
+		{
+			name:     "两边都没有要提醒",
+			want:     "",
+			wantWarn: true,
+		},
+		{
+			name: "FORCE 强制覆盖",
+			cfg:  Config{PlayDomain: "https://play.example.com", PlayDomainForce: true},
+			cur:  "http://192.168.1.13:6086",
+			want: "https://play.example.com",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var warns []string
+			got := choosePlayDomain(tc.cfg, tc.cur, func(s string) { warns = append(warns, s) })
+			if got != tc.want {
+				t.Errorf("写入值 = %q，期望 %q", got, tc.want)
+			}
+			if (len(warns) > 0) != tc.wantWarn {
+				t.Errorf("警告 = %v，期望有警告 %v", warns, tc.wantWarn)
+			}
+		})
+	}
+}

@@ -11,8 +11,8 @@ services:
     build:
       context: .
       args:
-        VERSION: ${VERSION:-v0.6.0}
-    image: strm115:${VERSION:-v0.6.0}
+        VERSION: ${VERSION:-v0.6.1}
+    image: strm115:${VERSION:-v0.6.1}
     container_name: strm115
     restart: unless-stopped
 
@@ -104,7 +104,7 @@ services:
   # 跑完就退出，Exited (0) 是**正常状态**，不是崩溃。
   bootstrap:
     profiles: ["auto"]
-    image: strm115:${VERSION:-v0.6.0}
+    image: strm115:${VERSION:-v0.6.1}
     container_name: strm115-bootstrap
     restart: "no"
 
@@ -131,7 +131,9 @@ services:
 
       # .strm 里写的播放地址。必须是播放器/Emby 能访问到的地址，
       # 不能是容器的 127.0.0.1，也不能是容器内网 IP。
+      # 默认「后台已有值优先」，避免换路由器自愈改好的新 IP 被这里的旧值覆盖。
       PLAY_DOMAIN: ${PLAY_DOMAIN:-}
+      PLAY_DOMAIN_FORCE: ${PLAY_DOMAIN_FORCE:-}
 
       EMBY_URL: ${EMBY_URL:-http://emby:8096}
       EMBY_SKIP: ${EMBY_SKIP:-0}

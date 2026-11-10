@@ -34,6 +34,9 @@ type Config struct {
 	AdminUser  string // 管理员账号（首次初始化时也可由它决定，这里用于登录）
 	AdminPass  string // 管理员密码
 	PlayDomain string // 写进 .strm 的播放地址，必须是播放器能访问到的地址
+	// PlayDomainForce 允许 .env 的 PLAY_DOMAIN 覆盖已经存在的播放地址。
+	// 默认不覆盖：自愈机制改写过的新 IP 不能被 .env 里的旧值又改回去。
+	PlayDomainForce bool
 
 	EmbyURL   string
 	EmbyUser  string
@@ -78,6 +81,33 @@ func bootstrapPassword() string {
 	return os.Getenv("AUTH_PASSWORD")
 }
 
+// choosePlayDomain 决定这次引导要写入哪个播放地址，返回空串表示不动。
+//
+// 默认「已有值优先」：那个值可能刚被换路由器自愈改成新 IP，若被 .env 里
+// 的旧地址覆盖回去，就会陷入「修好 → 重启又坏 → 再修」的循环。真想强制改，
+// 设 PLAY_DOMAIN_FORCE=1；平时用页面上的「保存并改写已有 STRM」更直接。
+func choosePlayDomain(cfg Config, cur string, warn func(string)) string {
+	cur = strings.TrimSpace(cur)
+	if cur != "" && !cfg.PlayDomainForce {
+		if cfg.PlayDomain != "" && cfg.PlayDomain != cur {
+			warn(fmt.Sprintf(
+				"沿用已有播放地址 %s；.env 的 PLAY_DOMAIN=%s 未采用"+
+					"（要强制覆盖请设 PLAY_DOMAIN_FORCE=1，或到「Strm 管理 → 播放地址」修改）",
+				cur, cfg.PlayDomain))
+		}
+		return "" // 沿用，不写
+	}
+	if cfg.PlayDomain == "" {
+		warn("没有可用的播放域名：请在 .env 里设置 PLAY_DOMAIN=" +
+			"http://<本机局域网IP>:6086（必须是播放器能访问的地址，不能是 127.0.0.1）")
+		return ""
+	}
+	if cfg.PlayDomain == cur {
+		return ""
+	}
+	return cfg.PlayDomain
+}
+
 func LoadConfig() Config {
 	libType := env("LIBRARY_TYPE", "movies")
 	switch libType {
@@ -89,7 +119,8 @@ func LoadConfig() Config {
 		StrmURL:    normalizeURL(env("BOOTSTRAP_STRM_URL", "http://strm115:6060")),
 		AdminUser:  env("ADMIN_USER", "admin"),
 		AdminPass:  bootstrapPassword(),
-		PlayDomain: normalizeURL(os.Getenv("PLAY_DOMAIN")),
+		PlayDomain:      normalizeURL(os.Getenv("PLAY_DOMAIN")),
+		PlayDomainForce: env("PLAY_DOMAIN_FORCE", "") == "1",
 
 		EmbyURL:   env("EMBY_URL", "http://emby:8096"),
 		EmbyUser:  env("EMBY_ADMIN_USER", "admin"),
@@ -223,18 +254,11 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) (*Report, error) {
 	}
 	patch := map[string]string{}
 
-	playDomain := cfg.PlayDomain
-	if playDomain == "" {
-		if v := cur["play_domain"]; v != "" {
-			playDomain = v
-			slog.Info("沿用已有播放域名", "domain", v)
-		} else {
-			rep.warn("没有可用的播放域名：请在 .env 里设置 PLAY_DOMAIN=" +
-				"http://<本机局域网IP>:6086（必须是播放器能访问的地址，不能是 127.0.0.1）")
-		}
-	}
-	if playDomain != "" && playDomain != cur["play_domain"] {
-		patch["play_domain"] = playDomain
+	// 最终生效的播放地址：后面「要不要触发同步」还要用它判断。
+	playDomain := strings.TrimSpace(cur["play_domain"])
+	if d := choosePlayDomain(cfg, cur["play_domain"], func(s string) { rep.warn("%s", s) }); d != "" {
+		patch["play_domain"] = d
+		playDomain = d
 	}
 
 	if rep.EmbyKey != "" {

@@ -13,6 +13,12 @@ package httpapi
 //     用户能用这个地址打开页面，就说明它对本机可达；再探一次 6086 确认能播，
 //     才真正改写，避免把好地址改成坏地址。
 //
+// 换路由器会连网段一起换（192.168.200.x → 192.168.1.x）。早期版本为了防
+// 「另一块网卡」误改，硬性要求同一 /24，结果恰好把换路由器这个最常见的场景
+// 排除在外：旧地址一直不通、新地址明明探得到，却只会反复告警。现在同 /24
+// 只是优先顺序，不再是准入门槛 —— 候选本来就是用户刚刚用过的地址，加上
+// /healthz 两次确认，跨网段同样可靠。
+//
 // 只在「当前地址是 IP 且确定不通」时动手。域名失效通常是 DNS/DDNS 的问题，
 // 换成一个内网 IP 只会更糟，所以那种情况只告警不改。
 
@@ -163,13 +169,23 @@ func (s *Server) autoFixPlayDomain(ctx context.Context) (from, to string, files 
 	}
 	prefix := strings.TrimRight(u.Path, "/")
 
-	for _, host := range s.seenCandidates() {
-		if host == u.Hostname() {
-			continue
+	// 同 /24 的候选优先（只是 DHCP 续租换号）；跨网段的排在后面，但一样要试：
+	// 换了路由器、接了另一个网口、把机器搬到别处的网络，都是跨网段。
+	// 手写两段保持稳定顺序，也省得为几个元素引入 sort。
+	cands := s.seenCandidates()
+	ordered := make([]string, 0, len(cands))
+	for _, h := range cands {
+		if sameSubnet24(oldIP, h) {
+			ordered = append(ordered, h)
 		}
-		// 只认同一 /24：DHCP 换 IP 不会跨网段。跨了网段说明用户的网络环境变了
-		// （换了路由器 / 接了另一个网口），这时候猜一个地址只会让排查更难。
-		if !sameSubnet24(oldIP, host) {
+	}
+	for _, h := range cands {
+		if !sameSubnet24(oldIP, h) {
+			ordered = append(ordered, h)
+		}
+	}
+	for _, host := range ordered {
+		if host == u.Hostname() {
 			continue
 		}
 		cand := u.Scheme + "://" + net.JoinHostPort(host, port) + prefix
@@ -190,10 +206,10 @@ func (s *Server) autoFixPlayDomain(ctx context.Context) (from, to string, files 
 		s.recordNotification("play_domain_fixed", notify.Message{
 			Kind:  notify.KindSystem,
 			Title: "播放地址已自动修正",
-			Content: fmt.Sprintf(
-				"宿主机地址从 %s 变成了 %s（多半是 DHCP 重新分配），已改写 %d 个 .strm（共扫描 %d 个）。\n"+
-					"如果经常发生，建议在路由器上给这台机器做 DHCP 保留，或直接用一个固定域名。",
-				cur, cand, changed, n),
+				Content: fmt.Sprintf(
+					"播放地址从 %s 改成了 %s（换了路由器 / 网段，或 DHCP 重新分配），已改写 %d 个 .strm（共扫描 %d 个）。\n"+
+						"要彻底不依赖局域网 IP，可以在路由器上做 DHCP 静态保留，或把播放地址填成一个固定域名。",
+					cur, cand, changed, n),
 			Link: "/settings",
 		})
 		return cur, cand, changed, true
@@ -216,10 +232,11 @@ func (s *Server) alertPlayBroken(ctx context.Context, domain, why string) {
 	s.recordNotification("play_domain_broken", notify.Message{
 		Kind:  notify.KindSystem,
 		Title: "播放地址可能已失效",
-		Content: fmt.Sprintf(
-			"当前播放地址 %s 连不上（%s），Emby 里点播放会没反应。\n"+
-				"到「设置 → 播放地址」改成本机现在的局域网 IP，保存时会自动改写已有 .strm。",
-			domain, why),
+			Content: fmt.Sprintf(
+				"当前播放地址 %s 连不上（%s），Emby 里点播放可能会没反应。\n"+
+					"换了路由器/网段的话，用新的局域网 IP 打开一次管理页即可自动改写；\n"+
+					"也可以到「Strm 管理 → 播放地址」填当前地址并点「保存并改写已有 STRM」。",
+				domain, why),
 		Link: "/settings",
 	})
 }
@@ -296,8 +313,8 @@ func usableHost(host string) bool {
 }
 
 // sameSubnet24 判断两个地址是否在同一 /24。
-// 家用局域网基本都是 /24，DHCP 续租换 IP 不会换网段；
-// 用它当「这多半是同一块网卡换了个号」的判据。
+// 家用局域网基本都是 /24，DHCP 续租换 IP 不会换网段，所以同段的候选优先；
+// 但它不再是准入门槛 —— 换路由器本来就会跨段，那种情况也必须能自愈。
 func sameSubnet24(a net.IP, host string) bool {
 	b := net.ParseIP(host).To4()
 	if a == nil || b == nil {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"strm115/internal/config"
 	"strm115/internal/store"
@@ -179,22 +180,54 @@ func TestAutoFixPlayDomainAlertsOnce(t *testing.T) {
 	}
 }
 
-// 跨网段的候选不能采用：那多半是另一块网卡，改过去播放器反而连不上。
-func TestAutoFixPlayDomainIgnoresOtherSubnet(t *testing.T) {
+// 换路由器会连网段一起换：跨 /24 的候选也必须能自愈。
+// 早期版本把「同一 /24」当准入门槛，恰好把最常见的场景排除在外。
+func TestAutoFixPlayDomainFollowsRouterChange(t *testing.T) {
+	cur := "http://192.168.50.3:6086"
+	s, strmPath := testNetServer(t, cur+"/d/abc.mkv")
+	ctx := context.Background()
+	_ = s.st.SetSetting(ctx, "play_domain", cur)
+	s.rememberHost("192.168.1.13:6060")
+	s.playProbe = func(_ context.Context, d string) bool {
+		return strings.Contains(d, "192.168.1.13")
+	}
+
+	from, to, files, fixed := s.autoFixPlayDomain(ctx)
+	if !fixed || from != cur || to != "http://192.168.1.13:6086" || files != 1 {
+		t.Fatalf("换网段应该自动修正，from=%q to=%q files=%d fixed=%v", from, to, files, fixed)
+	}
+	body, err := os.ReadFile(strmPath)
+	if err != nil {
+		t.Fatalf("读 .strm 失败: %v", err)
+	}
+	if got := strings.TrimSpace(string(body)); got != "http://192.168.1.13:6086/d/abc.mkv" {
+		t.Fatalf(".strm 没改成新网段地址：%q", got)
+	}
+	if got := s.setting(ctx, "play_domain"); got != "http://192.168.1.13:6086" {
+		t.Fatalf("设置没更新：%q", got)
+	}
+}
+
+// 两个候选都通时，仍优先同一 /24（那多半只是 DHCP 续租换号）。
+// 这里故意让跨网段候选是「更晚看到」的，验证排序压过时间顺序。
+func TestAutoFixPlayDomainPrefersSameSubnet(t *testing.T) {
 	cur := "http://192.168.1.17:6086"
 	s, _ := testNetServer(t, cur+"/d/abc.mkv")
 	ctx := context.Background()
 	_ = s.st.SetSetting(ctx, "play_domain", cur)
-	s.rememberHost("192.168.200.17:6060")
+	s.seenMu.Lock()
+	s.seenHosts = map[string]time.Time{
+		"192.168.1.13": time.Now().Add(-time.Minute), // 同段，较早
+		"10.0.0.9":     time.Now(),                    // 跨段，较新
+	}
+	s.seenMu.Unlock()
 	s.playProbe = func(_ context.Context, d string) bool {
-		return strings.Contains(d, "192.168.200.17")
+		return !strings.Contains(d, "192.168.1.17")
 	}
 
-	if _, _, _, fixed := s.autoFixPlayDomain(ctx); fixed {
-		t.Fatal("跨网段不该自动改")
-	}
-	if got := s.setting(ctx, "play_domain"); got != cur {
-		t.Fatalf("地址被改了：%q", got)
+	_, to, _, fixed := s.autoFixPlayDomain(ctx)
+	if !fixed || to != "http://192.168.1.13:6086" {
+		t.Fatalf("应优先同 /24 候选，to=%q fixed=%v", to, fixed)
 	}
 }
 

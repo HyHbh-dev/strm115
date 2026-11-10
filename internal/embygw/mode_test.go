@@ -311,3 +311,25 @@ func TestPrefetchOnItemDetail(t *testing.T) {
 		t.Fatal("详情页没有触发直链预热")
 	}
 }
+
+// .strm 里的局域网 IP 只是个占位符：取流时网关只读 /d/ 后面的 pickcode，
+// PlaybackInfo 改写时又会把 host 换成客户端实际访问的域名。所以换路由器、
+// 换网段之后，哪怕还没来得及批量改写那些文件，播放链路也不该受影响。
+func TestStrmTargetIgnoresPlayDomainHost(t *testing.T) {
+	for _, host := range []string{
+		"192.168.50.3:6086", // 老路由器的地址
+		"192.168.1.13:6086",  // 新路由器的地址
+		"10.255.255.1:6086",  // 完全不可达
+		"emby.example.com",   // 固定域名
+	} {
+		raw := "http://" + host + "/d/q/04ac73.mkv?/F1.mkv"
+		pick, ok := strmTarget(raw)
+		if !ok || pick != "q/04ac73.mkv" {
+			t.Errorf("host=%s 解析到 %q, %v；期望 q/04ac73.mkv", host, pick, ok)
+		}
+		got, ok := normalizeDirectURL(raw, clientBase{Scheme: "https", Host: "emby.example.com"})
+		if !ok || !strings.HasPrefix(got, "https://emby.example.com/d/") {
+			t.Errorf("host=%s 归一化到 %q, %v", host, got, ok)
+		}
+	}
+}

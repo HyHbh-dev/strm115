@@ -1007,7 +1007,7 @@ const backups = [
  * main.go / package.json。这里只显示后端真实回报的版本，不再假装能联网查更新：
  * 本项目没有发布通道，那个「下载并替换二进制」按钮以前点了只会弹个 toast。
  */
-const currentVersion = computed(() => session.version || 'v0.6.0')
+const currentVersion = computed(() => session.version || 'v0.6.1')
 /** 本版变更：每次跑 bump-version.py 时顺手改这一栏，用户能一眼看出换没换版本。 */
 const releaseNotes = [
   '新增版本号机制（VERSION + scripts/bump-version.py），每次修复递增',
@@ -1052,6 +1052,8 @@ const releaseNotes = [
   'v0.6.0：302 网关合并两套思路：播放方式可切换「统一 302 入口 / 混合 / 播放器直连 /d/」，.strm 内网地址按客户端域名归一化',
   'v0.6.0：凭据、UserId、真实容器一并修正；打开影片详情就开始预热直链，冷解析不再落在起播关键路径上',
   'v0.6.0：订阅选集每 50 集一段（网页弹窗 + TG 键盘），79 集长剧可跳到集号，E61 之后也能选',
+  'v0.6.1：换路由器/换网段也能自动跟随：用新 IP 打开一次后台，播放地址与全部 .strm 自动改写（原来只认同网段）',
+  'v0.6.1：引导不再用 .env 里的旧 PLAY_DOMAIN 覆盖已有播放地址；要强制改可设 PLAY_DOMAIN_FORCE=1',
 ]
 </script>
 

@@ -344,6 +344,12 @@ func Recognize(e Entry, minSizeMB int64) Item {
 			title = stripAnime(title)
 		}
 		it.Title = title
+		// 只有集号、没有季号（`Show Episode 199` / `某剧 第08集`）：Emby 的目录
+		// 结构是「剧名/Season N/文件」，季号缺省就是第一季。留在 0 的话文件会
+		// 落在剧名根目录，媒体库里没有季分组，后续按季刮削也对不上。
+		if it.Episode > 0 && it.Season == 0 {
+			it.Season = 1
+		}
 	} else {
 		it.Kind = KindMovie
 	}

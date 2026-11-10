@@ -60,8 +60,9 @@ var (
 	reCNEpisode     = regexp.MustCompile(`第\s*(` + cnEpPat + `)\s*[集话話]`)
 	reSeasonWord    = regexp.MustCompile(`(?i)(?:^|[\s._\[\(-])(?:season|series|s)\s*(\d{1,2})(?:[\s._\]\)-]|$)`)
 	reSeasonCN      = regexp.MustCompile(`第\s*(` + cnNumPat + `)\s*季`)
-	reEpisodeWord   = regexp.MustCompile(`(?i)\bE(?:P|pisode)?\s*(\d{1,4})\b`)
-	reEP            = regexp.MustCompile(`(?i)\bEP?(\d{1,4})\b`)
+	// 「E05」「EP05」「Episode 5」「Episode.5」：分隔符可能是空格、点、下划线或横杠。
+	reEpisodeWord = regexp.MustCompile(`(?i)\bE(?:P|pisode)?[\s._-]*(\d{1,4})\b`)
+	reEP          = regexp.MustCompile(`(?i)\bEP?(\d{1,4})\b`)
 )
 
 var (
@@ -237,6 +238,12 @@ func Parse(relPath string) Parsed {
 	if hasEp && season == 0 && seasonFromDir > 0 {
 		season = seasonFromDir
 	}
+	// 季号哪里都没写（`某剧/… Episode 199.mkv`、整理后落在剧名根目录的文件）：
+	// 按第一季算。Emby 对剧集根目录下的文件也是这么处理的；留 0 的话 nfo 会写成
+	// <season>0</season>，在 Emby 里就变成「特别篇」，和它自己的解析结果打架。
+	if hasEp && season == 0 {
+		season = 1
+	}
 
 	if hasEp {
 		out.Kind = KindSeries
@@ -337,6 +344,13 @@ func cleanName(s string) Parsed {
 	// 单独的「第N季」（没有集号的目录名）：不同步剥掉的话，
 	// 每季都会因为片名里带着「第一季」而被当成另一部剧。
 	work = reSeasonCN.ReplaceAllString(work, " ")
+	// 只有集号的几种写法也必须剥：findEpisode 认得出来，但名字里留着就会
+	// 变成片名的一部分 —— `A Record of a Mortal’s Journey to Immortality
+	// Episode 199` 去 TMDB 是搜不到的（整理时会被判成「认不出」而跳过）。
+	// 中文的「第199集」同理。
+	work = reCNEpisode.ReplaceAllString(work, " ")
+	work = reEpisodeWord.ReplaceAllString(work, " ")
+	work = reEP.ReplaceAllString(work, " ")
 
 	// 从第一个技术参数开始整段丢弃
 	if loc := reTechMark.FindStringIndex(work); loc != nil {

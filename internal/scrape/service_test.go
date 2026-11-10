@@ -73,9 +73,18 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	case strings.HasPrefix(p, "/search/tv"):
 		atomic.AddInt32(&f.searches, 1)
-		if strings.Contains(strings.ToLower(q), "breaking") {
+		switch {
+		case strings.Contains(strings.ToLower(q), "breaking"):
 			writeJSONFake(w, `{"results":[{"id":1396,"name":"绝命毒师","original_name":"Breaking Bad","first_air_date":"2008-01-20","vote_average":9.5,"poster_path":"/bb.jpg"}]}`)
-		} else {
+		case strings.Contains(strings.ToLower(q), "mortal"):
+			// 只有英文发布名的国创：zh-CN 下 TMDB 只回中文名，en-US 下才是英文名。
+			// 用来验证刮削的「第二语言兜底」。
+			if r.URL.Query().Get("language") == "en-US" {
+				writeJSONFake(w, `{"results":[{"id":106449,"name":"A Record of a Mortal's Journey to Immortality","original_name":"凡人修仙传","first_air_date":"2020-07-25","vote_average":8.4,"poster_path":"/mr.jpg"}]}`)
+			} else {
+				writeJSONFake(w, `{"results":[{"id":106449,"name":"凡人修仙传","original_name":"凡人修仙传","first_air_date":"2020-07-25","vote_average":8.4,"poster_path":"/mr.jpg"}]}`)
+			}
+		default:
 			writeJSONFake(w, `{"results":[]}`)
 		}
 		return
@@ -110,6 +119,10 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(p, "/movie/"):
 		atomic.AddInt32(&f.details, 1)
 		writeJSONFake(w, `{"id":693134,"title":"沙丘2","original_title":"Dune: Part Two","release_date":"2024-02-27","vote_average":8.2,"runtime":166,"overview":"保罗的旅程","poster_path":"/dune.jpg","backdrop_path":"/dune-bg.jpg","genres":[{"name":"科幻"}],"external_ids":{"imdb_id":"tt15239678"}}`)
+		return
+	case p == "/tv/106449":
+		atomic.AddInt32(&f.details, 1)
+		writeJSONFake(w, `{"id":106449,"name":"凡人修仙传","original_name":"凡人修仙传","first_air_date":"2020-07-25","vote_average":8.4,"episode_run_time":[20],"overview":"修仙","poster_path":"/mr.jpg","genres":[{"name":"动画"}],"seasons":[{"season_number":1}],"external_ids":{"imdb_id":"tt12879782"}}`)
 		return
 	case strings.HasPrefix(p, "/tv/"):
 		atomic.AddInt32(&f.details, 1)
@@ -552,5 +565,45 @@ func TestRescrapeOneByTMDbID(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `type="tmdb"`) || !strings.Contains(string(raw), "tt15239678") {
 		t.Errorf("nfo 缺 tmdb / imdb uniqueid:/n%s", raw)
+	}
+}
+
+// TestScrapeEnglishOnlyReleaseName 盯住「发布名只有英文、TMDB 中文名对不上」。
+//
+// 《凡人修仙传》的发布名是 `A Record of a Mortal’s Journey to Immortality`，
+// 而 TMDB 的 zh-CN 名字只有中文。只搜一次 zh-CN 的话片名对不上，整部剧的
+// 集数都会变成「没匹配」，库里就是一堆灰卡片。这里要求退一步用 en-US 再搜。
+func TestScrapeEnglishOnlyReleaseName(t *testing.T) {
+	fake := &fakeTMDB{}
+	fake.start(t)
+
+	svc, st, lib, _ := newTestService(t)
+	ctx := context.Background()
+
+	name := "A Record of a Mortal\u2019s Journey to Immortality Episode 199 1080p.mkv"
+	files := []store.File{{
+		LibraryID: lib.ID, FileID: "1", PickCode: "a", Name: name,
+		RelPath: "剧集/A Record of a Mortal\u2019s Journey to Immortality/Season 1/" + name,
+		Size:    1 << 30,
+	}}
+	if err := st.UpsertFiles(ctx, lib.AccountID, files); err != nil {
+		t.Fatal(err)
+	}
+
+	opt := DefaultOptions()
+	opt.Rate = 0
+	opt.Translate = false
+	job, err := svc.Start(lib, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-job.Done()
+
+	p := job.Snapshot()
+	if p.Phase != "done" {
+		t.Fatalf("任务没跑完: phase=%s err=%s", p.Phase, p.Err)
+	}
+	if p.Matched != 1 || p.Unmatched != 0 {
+		t.Fatalf("英文发布名应能在 en-US 下匹配上，实际 matched=%d unmatched=%d", p.Matched, p.Unmatched)
 	}
 }

@@ -31,6 +31,14 @@ func TestRecognizeTargets(t *testing.T) {
 				Dir: "The Last of Us/Season 1", File: "The.Last.of.Us.S01E03.1080p.mkv"},
 		},
 		{
+			// 只有集号、没有季号：季号补 1，文件进 Season 1，片名要洗干净。
+			// 以前片名里留着「Episode 199」，拿它去 TMDB 搜永远搜不到，
+			// 文件就一直卡在待整理目录（真实踩过的例子）。
+			name: "A.Record.Mortal.Journey.Episode.199.1080p.mkv",
+			want: Item{Kind: KindSeries, Title: "A Record Mortal Journey", Season: 1, Episode: 199,
+				Dir: "A Record Mortal Journey/Season 1", File: "A.Record.Mortal.Journey.Episode.199.1080p.mkv"},
+		},
+		{
 			// 整个季目录搬过去，且不能套两层 Season
 			name:  "某剧 第1季",
 			isDir: true,

@@ -715,6 +715,18 @@ func (s *Service) resolveOne(ctx context.Context, pace *pacer,
 		parsed := Parsed{Title: k.title, Year: k.year, Kind: k.kind}
 		hit, ok := Pick(parsed, hits)
 		if !ok {
+			// 中文名对不上不等于没有这部片：国创 / 日番的发布名常常只有英文名
+			// （`A Record of a Mortal’s Journey to Immortality` == 凡人修仙传），
+			// 而 TMDB 的 zh-CN 名字只有中文。用 en-US 再搜一次，那边返回的
+			// 就是英文名。只在第一次没认出来时多花这一次请求。
+			if e := pace.wait(ctx); e == nil {
+				j.update(func(p *Progress) { p.Fetched++ })
+				if en, err := c.SearchMetaLang(ctx, firstNonEmpty(rawTitle, k.title), k.year, k.kind, "en-US"); err == nil {
+					hit, ok = Pick(parsed, en)
+				}
+			}
+		}
+		if !ok {
 			return Meta{}, false, errors.New("TMDB 里没找到足够接近的结果")
 		}
 		if err = pace.wait(ctx); err != nil {

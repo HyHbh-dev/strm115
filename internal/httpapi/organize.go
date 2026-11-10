@@ -482,6 +482,16 @@ func (s *Server) tmdbRecognized(ctx context.Context, it organize.Item) (bool, st
 	if _, ok := scrape.Pick(p, hits); ok {
 		return true, ""
 	}
+	// 中文库里对不上不等于没有这部片：国创 / 日番的发布名常常只有英文名
+	// （`A Record of a Mortal’s Journey to Immortality`），而 TMDB 的 zh-CN
+	// 名字是「凡人修仙传」，两边字面完全不同 —— 但用 en-US 搜同一串，返回的
+	// 就是那个英文名。只在第一次没认出来时多花这一次请求。
+	if en, err := c.SearchMetaLang(ctx, it.Title, it.Year, it.NeedLib(), "en-US"); err == nil {
+		if _, ok := scrape.Pick(p, en); ok {
+			s.log.Info("整理：zh-CN 名字对不上，按英文名对上了 TMDB", "title", it.Title)
+			return true, ""
+		}
+	}
 	return false, "TMDB 里没找到（片名 / 年份对不上），先留在暂存目录"
 }
 

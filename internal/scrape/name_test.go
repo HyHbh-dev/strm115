@@ -38,6 +38,13 @@ func TestParse(t *testing.T) {
 		{"剧集/最后生还者 第一季/The.Last.of.Us.第十集.mkv", "最后生还者", "", KindSeries, 1, 10},
 		{"剧集/繁花.第二季/繁花.第二季.第二十三集.mkv", "繁花", "", KindSeries, 2, 23},
 		{"剧集/The.Last.of.Us/Season 2/S02E03.1080p.mkv", "The Last of Us", "", KindSeries, 2, 3},
+		// 英文长写法「Episode 199」：集号认出来，而且不能留在片名里 ——
+		// 留着的话整理时拿「…Immortality Episode 199」去 TMDB 搜，永远搜不到，
+		// 文件就一直躺在待整理目录里（真实踩过的例子）。
+		{"[FSP DN] A Record of a Mortal’s Journey to Immortality Episode 199 1080p HEVC AAC.mkv",
+			"A Record of a Mortal’s Journey to Immortality", "", KindSeries, 1, 199},
+		// 点分隔的同一种写法
+		{"剧集/Show.Episode.05.1080p.mkv", "Show", "", KindSeries, 1, 5},
 
 		// —— 认不出来的：宁可留空 ——
 		{"电影/movie.mkv", "", "", KindMovie, 0, 0},
